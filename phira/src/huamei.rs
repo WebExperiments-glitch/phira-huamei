@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    client::{basic_client_builder, HUAMEI_CLIENT_VER, HUAMEI_PUBLISHABLE_KEY, HUAMEI_SITE},
+    client::{basic_client_builder, HUAMEI_CLIENT_VER, HUAMEI_PUBLISHABLE_KEY, HUAMEI_REFERER, HUAMEI_SITE},
     get_data,
 };
 
@@ -116,6 +116,21 @@ fn bare_client() -> reqwest::Client {
         HeaderValue::from_static(HUAMEI_PUBLISHABLE_KEY),
     );
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    /* ⚠ 必须带上 Referer / Origin。
+       `phm-web/lib/cloud.mjs` 顶部写得很明确：
+       「认证头是 x-wb-webapp-access-key（= publishableKey），**身份由 referer 判定**」。
+       浏览器里跑 SDK 时这两个头是自动带的；原生客户端不带，
+       服务端就可能把我们当成**另一个 client** —— 那正是
+       `the session is invalid, expired or issued for another client` 的措辞。
+       （实测单看某个端点用假 token 试不出来，但没理由不发。） */
+    headers.insert(
+        "referer",
+        HeaderValue::from_static(HUAMEI_REFERER),
+    );
+    headers.insert(
+        "origin",
+        HeaderValue::from_static(HUAMEI_SITE),
+    );
     basic_client_builder()
         .default_headers(headers)
         .build()
@@ -144,7 +159,19 @@ fn readable_error(text: &str) -> String {
     text.chars().take(220).collect()
 }
 
+/// 往调试日志追加一行（同样的落盘策略，见 `log_login_debug`）。
+pub fn log_debug_line(line: &str) {
+    use std::io::Write;
+    let Ok(root) = crate::dir::root() else { return };
+    let path = std::path::Path::new(&root).join("huamei-login.log");
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
+    };
+    let _ = writeln!(f, "{line}");
+}
+
 async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
+    step: &str,
     url: &str,
     body: &T,
     token: Option<&str>,
@@ -156,10 +183,26 @@ async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
     let resp = req.send().await.with_context(|| "网络请求失败（检查网络/代理）".to_string())?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!("{}（HTTP {status}）", readable_error(&text));
+
+    /* ⚠ 每一步都落盘。
+       起因：「the session is invalid, expired or issued for another client（401）」
+       这条报错在四个候选步骤里我**逐个用假值试都试不出来** ——
+       没有「哪一步、什么响应体」的记录就无从定位。
+       所以：成功记状态码，失败连响应体一起记。 */
+    if status.is_success() {
+        log_debug_line(&format!("[step] {step} → HTTP {status} ok"));
+    } else {
+        log_debug_line(&format!(
+            "[step] {step} → HTTP {status} FAIL body={}",
+            text.chars().take(400).collect::<String>()
+        ));
     }
-    serde_json::from_str::<R>(&text).with_context(|| "服务端返回的不是预期 JSON".to_string())
+
+    if !status.is_success() {
+        // 错误里带上**是哪一步**，别只甩一句服务端的英文
+        bail!("{step} 失败（HTTP {status}）：{}", readable_error(&text));
+    }
+    serde_json::from_str::<R>(&text).with_context(|| format!("{step}：服务端返回的不是预期 JSON"))
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -171,7 +214,7 @@ async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
 /// 对应 SDK 的 `auth.sendOtp({ email })`。
 pub async fn send_otp(email: &str) -> Result<OtpStarted> {
     let body = serde_json::json!({ "email": email, "usage": "email" });
-    post_json::<_, OtpStarted>(&format!("{}/verification", auth_base()), &body, None).await
+    post_json::<_, OtpStarted>("发验证码", &format!("{}/verification", auth_base()), &body, None).await
 }
 
 /// 第二步：验证码换会话。
@@ -192,7 +235,7 @@ pub async fn verify_otp(
         "verification_code": code,
     });
     let v: VerifyResp =
-        post_json(&format!("{}/verification/verify", auth_base()), &vbody, None).await?;
+        post_json("校验验证码", &format!("{}/verification/verify", auth_base()), &vbody, None).await?;
     if v.verification_token.is_empty() {
         bail!("服务端没有返回 verification_token");
     }
@@ -202,21 +245,27 @@ pub async fn verify_otp(
             "username": email,
             "verification_token": v.verification_token,
         });
-        post_json(&format!("{}/signin", auth_base()), &body, None).await
+        post_json("登录（老用户）", &format!("{}/signin", auth_base()), &body, None).await
     } else {
-        let body = serde_json::json!({
+        /* ⚠ 空密码要**直接不发这个字段** —— SDK 里是 `e.password && (t.password = e.password)`，
+           空串会让它整条消失（`""` 是 falsy）。发 `"password": ""` 是另一回事，
+           服务端可能因此走不同分支。这里严格对齐 SDK。 */
+        let mut body = serde_json::json!({
             "email": email,
-            "password": password.unwrap_or(""),
             "verification_token": v.verification_token,
         });
-        post_json(&format!("{}/signup", auth_base()), &body, None).await
+        let pw = password.unwrap_or("");
+        if !pw.is_empty() {
+            body["password"] = serde_json::Value::String(pw.to_owned());
+        }
+        post_json("注册（新用户）", &format!("{}/signup", auth_base()), &body, None).await
     }
 }
 
 /// 密码登录。对应 SDK 的 `auth.signInWithPassword`。
 pub async fn sign_in_password(email: &str, password: &str) -> Result<Session> {
     let body = serde_json::json!({ "username": email, "password": password });
-    post_json(&format!("{}/signin", auth_base()), &body, None).await
+    post_json("密码登录", &format!("{}/signin", auth_base()), &body, None).await
 }
 
 /// 校验当前 token 是否有效，返回用户信息。
@@ -572,7 +621,7 @@ pub async fn upload_play(payload_json: &[u8], chart_digest: Option<String>) -> R
         body.score,
         body.chart_notes
     );
-    post_json::<_, UploadResp>(&format!("{}/play", hm_base()), &body, Some(&token)).await
+    post_json::<_, UploadResp>("上报成绩", &format!("{}/play", hm_base()), &body, Some(&token)).await
 }
 
 #[cfg(test)]

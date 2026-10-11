@@ -58,6 +58,14 @@ pub const HUAMEI_SITE: &str = match option_env!("HUAMEI_SITE") {
 ///   用 `apikey` 会得到 `invalid_client: the client credential is invalid or revoked`。
 pub const HUAMEI_PUBLISHABLE_KEY: &str = "wbpk_TRm3Cbt5VeYHHDwUL854jr_5Xi69EqYG18sPzQnMMJhJr08x67NoE3b";
 
+/// 鉴权请求必须带的 `Referer`。
+///
+/// ⚠ 这不是可选项：`phm-web/lib/cloud.mjs` 里写得很明确 ——
+///   「认证头是 `x-wb-webapp-access-key`（= publishableKey），**身份由 referer 判定**」。
+///   浏览器里跑 SDK 时这个头自动就有；原生客户端不发，
+///   服务端就可能把我们当成**另一个 client**。
+pub const HUAMEI_REFERER: &str = "https://phm.app.workbuddy.host/";
+
 pub fn basic_client_builder() -> ClientBuilder {
     let policy = reqwest::redirect::Policy::custom(|attempt| {
         if let Some(_cid) = attempt.url().as_str().strip_prefix("anys://") {
