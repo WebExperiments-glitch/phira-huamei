@@ -178,6 +178,10 @@ async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
 ) -> Result<R> {
     let mut req = bare_client().post(url).json(body);
     if let Some(t) = token {
+        // ⚠ **`x-hm-token` 才是主用的那个** —— 实测托管边缘会把入站的
+        //   `Authorization` 头吃掉/改掉（我们的服务端收到后解析出来根本不是一个
+        //   JWT），所以两个都发，服务端优先读自定义头。见 server.mjs 的注释。
+        req = req.header("x-hm-token", t.to_owned());
         req = req.header(AUTHORIZATION, format!("Bearer {t}"));
     }
     let resp = req.send().await.with_context(|| "网络请求失败（检查网络/代理）".to_string())?;

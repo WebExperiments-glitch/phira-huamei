@@ -863,7 +863,25 @@ impl SongScene {
             !config.offline_mode && can_rated && !mods.intersects(Mods::UNRATED) && !config.use_keyboard && config.speed >= 1.0 - 1e-3
         };
         #[cfg(not(closed))]
-        let rated = false;
+        let rated = {
+            // ══════════════════════════════════════════════════════════
+            // 【huamei 改动】上游在开源构建里把 `rated` 写死成 `false`，
+            // 于是**每打一局都弹「本次游玩不计成绩」**。
+            // 那句话说的是 **Phira 官方**不计成绩（官方排行榜），
+            // 但用户看到只会以为我们的上传也关了 —— 实测就是这么反馈的。
+            //
+            // 我们的「计入」= 结算时**真的会上传**。所以条件要和
+            // `prpr/src/scene/game.rs` 里造 record_data 的守卫**保持一致**，
+            // 再加上「已登 huamei」：
+            //   · 没登 huamei            → 不弹，因为确实不会上传
+            //   · offline_mode / UNRATED / 变速 → 不弹，prpr 侧也不会造载荷
+            let c = &get_data().config;
+            crate::huamei::current_token().is_some()
+                && !c.offline_mode
+                && can_rated
+                && !mods.intersects(Mods::UNRATED)
+                && c.speed >= 1.0 - 1e-3
+        };
         if !rated && can_rated && mode == GameMode::Normal {
             show_message(tl!("warn-unrated")).warn();
         }
