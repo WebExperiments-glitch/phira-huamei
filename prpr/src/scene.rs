@@ -197,7 +197,52 @@ pub fn request_input(id: impl Into<String>, mut config: InputBox) {
 
 pub fn take_input() -> Option<(String, String)> {
     let mut w = INPUT_TEXT.lock().unwrap();
-    w.0.clone().zip(std::mem::take(&mut w.1))
+    w.0.clone().zip(std::mem::take(&mut w.1).map(|it| sanitize_dialog_text(&it)))
+}
+
+/// 【huamei 改动】修输入框在 Windows 上回传文本的**编码损坏**。
+///
+/// ══════════════════════════════════════════════════════════════
+/// 【2026-10-11 实测复现】
+/// ══════════════════════════════════════════════════════════════
+/// Windows 上输入框是 `inputbox` crate 跑 PowerShell + WinForms 弹原生窗，
+/// 而 Rust 侧取的是 **`output.stdout` 的全部内容**当返回值：
+/// ```ignore
+/// Some(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+/// ```
+/// 实测 PowerShell **按 UTF-16 LE（带 BOM）写出**，原始字节是：
+/// ```text
+/// ff fe | 70 00 79 00 72 00 | 0d 00 0a 00
+///  BOM  |  p \0  y \0  r \0 |  \r \0 \n \0
+/// ```
+/// 按 UTF-8 读就变成 `\u{FFFD}\u{FFFD}p\0y\0r\0…`
+/// —— **每个字符后面多一个 NUL，长度接近翻倍**，屏幕上完全看不出来。
+///
+/// 用户报的「@ 前面有 59 个字符」，可他明明只输了 18 个 —— 就是这么来的。
+///
+/// 【为什么放在这里而不是各个调用点】
+///   `take_input()` 是**所有**文本输入的唯一出口（设置页、谱名编辑、
+///   搜索、房间地址…），每一条都会中同样的招。在这里洗一次，全站生效。
+///
+/// ⚠ 只清 **`\0` 和 `U+FFFD`** 这两样。
+///   它们是 UTF-16 损坏的产物，用户**打不出来**，删掉只有好处。
+///   空白**不在这里动** —— 搜索词、谱名里的空格是合法的，
+///   要删空白的场合（邮箱）自己去做（见 `phira::huamei::normalize_email`）。
+///
+/// ⚠ 但**尾随的 `\r\n` 要删**：PowerShell 在文本后面追加了它自己的换行，
+///   UTF-16 下是 `0d 00 0a 00` → 解码成 `\r \0 \n \0`。
+///   crate 那边本来用 `trim_end()` 想删掉它，可**末尾是 `\0` 不是空白**，
+///   所以它一个字符都没删掉 —— 得我们在去掉 `\0` 之后再收尾。
+///   （只删 `\r` `\n`，不删空格，免得误伤用户真的想留的空格。)
+pub fn sanitize_dialog_text(s: &str) -> String {
+    if !s.contains(['\0', '\u{FFFD}']) {
+        return s.to_owned();
+    }
+    s.chars()
+        .filter(|c| !matches!(*c, '\0' | '\u{FFFD}'))
+        .collect::<String>()
+        .trim_end_matches(['\r', '\n'])
+        .to_owned()
 }
 
 /// Returns the id of a cancelled input request once, clearing it.
@@ -585,3 +630,40 @@ fn draw_background(tex: Texture2D) {
 }
 
 pub type LocalSceneTask = LocalTask<Result<NextScene>>;
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_dialog_text;
+
+    /// 逐字节复现：BOM(ff fe) 按 UTF-8 lossy 读 → 两个 U+FFFD；
+    /// 随后每个 ASCII 字符后面跟一个 NUL（UTF-16LE 的高位字节）。
+    #[test]
+    fn repairs_utf16_read_as_utf8() {
+        let mut polluted = String::from("\u{FFFD}\u{FFFD}");
+        for c in "pyrpansiyuan123456@qq.com".chars() {
+            polluted.push(c);
+            polluted.push('\0');
+        }
+        polluted.push_str("\r\0\n\0");
+        assert_eq!(sanitize_dialog_text(&polluted), "pyrpansiyuan123456@qq.com");
+    }
+
+    /// ⚠ **空白绝不能被这里删掉** —— 搜索词、谱名里的空格是合法的。
+    /// （要删空白的场合自己去做：`phira::huamei::normalize_email`。）
+    #[test]
+    fn keeps_spaces() {
+        assert_eq!(sanitize_dialog_text("hello world"), "hello world");
+        assert_eq!(sanitize_dialog_text("  前后有空格  "), "  前后有空格  ");
+        assert_eq!(sanitize_dialog_text("a\0b c"), "ab c");
+        // ⚠ 尾随 CRLF（PowerShell 追加的）要删掉，但不能删空格
+        assert_eq!(sanitize_dialog_text("a\0b\r\0\n\0"), "ab");
+        assert_eq!(sanitize_dialog_text("hello \0world"), "hello world");
+    }
+
+    /// 没污染时要原样返回（也顺带保证不会误伤）
+    #[test]
+    fn passthrough_when_clean() {
+        assert_eq!(sanitize_dialog_text(""), "");
+        assert_eq!(sanitize_dialog_text("正常中文 English 123"), "正常中文 English 123");
+    }
+}

@@ -314,7 +314,11 @@ pub fn validate_email(email: &str) -> std::result::Result<(), String> {
     }
     let n_local = local.chars().count();
     if n_local > 40 {
-        return Err(format!("@ 前面有 {n_local} 个字符，服务端最多允许 40 个"));
+        return Err(format!(
+            "@ 前面有 {n_local} 个字符（最多 40）。\
+             实际收到的是：{}",
+            debug_repr(e, 90)
+        ));
     }
     if domain.contains('@') {
         return Err(format!("「{shown}」里有不止一个 @"));
@@ -356,6 +360,35 @@ pub fn validate_email(email: &str) -> std::result::Result<(), String> {
 ///
 ///   这里顺手也把 U+3000（全角空格）和零宽字符（U+200B/200C/200D/FEFF）去掉，
 ///   它们是复制粘贴时的常见污染。
+/// 把输入框吐出来的东西洗成一个正常的邮箱串。
+///
+/// ══════════════════════════════════════════════════════════════
+/// 【2026-10-11 实测到的真凶：UTF-16 被当成 UTF-8 读】
+/// ══════════════════════════════════════════════════════════════
+/// 输入框在 Windows 上是 `inputbox` crate 跑一个 PowerShell + WinForms 脚本，
+/// 而 Rust 侧取的是 **`output.stdout` 的全部内容**当返回值：
+/// ```ignore
+/// Some(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+/// ```
+/// 问题是 PowerShell **按 UTF-16 LE（带 BOM）写出**，实测原始字节是：
+/// ```text
+/// ff fe | 70 00 79 00 72 00 ... | 0d 00 0a 00
+///  BOM  | p  \0  y  \0  r  \0 ...| \r \0 \n \0
+/// ```
+/// 按 UTF-8 读就变成：
+/// `\u{FFFD}\u{FFFD}p\0y\0r\0p\0a\0n\0…@\0q\0q\0.\0c\0o\0m\0`
+/// —— **每个字符后面多一个 NUL，长度翻倍**，屏幕上完全看不出来。
+///
+/// 这就是「明明只输了 18 个字符，程序却说 59 个」的由来。
+///
+/// 【所以这里要顺手清掉三样东西】
+///   · `\0`     —— UTF-16 残留。邮箱里不可能有 NUL，删掉即可还原原串
+///   · `U+FFFD` —— BOM 等无效字节的 lossy 替换符，同样不可能出现在邮箱里
+///   · 空白     —— 空格/全角空格/制表符/换行，用户在 `qq. com` 中间多打一个空格是真踩过的
+///
+/// 顺序要紧：**先全角折半角 → 再剔 NUL/FFFD/空白/零宽**。
+/// ⚠ 对非 ASCII（中文）输入，UTF-16 的每个汉字会被拆成两个无效字节 → 两个 FFFD，
+///   信息已经丢了，还原不回来。但邮箱本来就是 ASCII，这条链路上够用。
 pub fn normalize_email(raw: &str) -> String {
     raw.chars()
         .map(|c| {
@@ -367,15 +400,59 @@ pub fn normalize_email(raw: &str) -> String {
                 c
             }
         })
-        // ⚠ **邮箱里出现任何空白都是误触，一律删掉。**
-        //   实测用户打出来的就是 `pyzpansiyuan123456@qq. com` ——
-        //   在 `qq.` 和 `com` 之间多了一个空格，肉眼极难发现。
-        //   这里不只 trim 首尾，是**全串剔除**：空白在邮箱里没有任何合法位置。
-        //   （`char::is_whitespace` 按 Unicode White_Space 属性，含全角空格 U+3000。）
         .filter(|c| !c.is_whitespace())
-        // 零宽字符：复制粘贴的常见污染，同样删掉
+        .filter(|c| !matches!(*c, '\0' | '\u{FFFD}'))
         .filter(|c| !matches!(*c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
         .collect::<String>()
+}
+
+/// 诊断用的字符串表示：用 `{:?}` 转义，**不可见字符会显形**。
+///
+/// 【为什么需要它】
+///   2026-10-11 用户报「@ 前面有 59 个字符」，可他明明只输了 18 个。
+///   输入框在 Windows 上是跑 PowerShell 脚本弹原生窗，而 Rust 侧取的是
+///   **`output.stdout` 的全部内容**当作返回值（`inputbox` 的 `wait_child`）——
+///   只要 PowerShell 往 stdout 多写任何东西，就会混进"邮箱"里。
+///
+///   而 `{:?}` 会把 `\r` `\n` `\t` NUL 之类**原样显示成转义序列**，
+///   不然它们在对话框里根本看不见，只能靠数长度猜。
+pub fn debug_repr(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for c in s.chars().take(max) {
+        match c {
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7F => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if (c as u32) == 0xFEFF => out.push_str("\\uFEFF"),
+            c => out.push(c),
+        }
+    }
+    if s.chars().count() > max {
+        out.push('…');
+    }
+    format!("「{out}」（{} 字符，{} 字节）", s.chars().count(), s.len())
+}
+
+/// 把一次登录输入的原貌追加到 `data/huamei-login.log`。
+///
+/// 【为什么落盘】
+///   「59 个字符」这种问题**光看截图查不出来**（不可见字符不显示，
+///   而且用户没法把奇怪字符复制给我）。写到文件里我就能直接读原始字节。
+///   ⚠ 只在**校验失败**时写，且写完就用 —— 不做长期日志，避免把邮箱留在盘上。
+pub fn log_login_debug(tag: &str, raw: &str, normalized: &str) {
+    use std::io::Write;
+    let Ok(root) = crate::dir::root() else { return };
+    let path = std::path::Path::new(&root).join("huamei-login.log");
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
+    };
+    let _ = writeln!(
+        f,
+        "[{tag}] raw={} normalized={}",
+        debug_repr(raw, 300),
+        debug_repr(normalized, 300)
+    );
 }
 
 /// 发起第一步：发验证码。
@@ -483,7 +560,41 @@ mod tests {
         assert!(e.contains('+'), "提示里要出现那个字符：{e}");
     }
 
-    /// ⚠ 用户 2026-10-11 截图里的那个串：`qq.` 和 `com` 之间**多了一个空格**。
+    /// ⚠ **实测出来的真凶**：输入框把文本按 **UTF-16 LE** 吐出来，
+    /// 而 Rust 侧按 UTF-8 读 → 每个字符后面多一个 NUL，长度翻倍，
+    /// 头两个字节（BOM `ff fe`）变成两个 `U+FFFD`。
+    ///
+    /// 这一条用**逐字节复现的真实污染串**来锁：
+    /// `ff fe 70 00 79 00 ... 0d 00 0a 00` 按 UTF-8 lossy 读出来是什么。
+    #[test]
+    fn utf16_read_as_utf8_is_repaired() {
+        // 逐字节复现：BOM(ff fe) 按 UTF-8 lossy 读 → 两个 U+FFFD；
+        // 随后每个 ASCII 字符后面跟一个 NUL（UTF-16LE 的高位字节）。
+        let mut polluted = String::from("\u{FFFD}\u{FFFD}");
+        for c in "pyrpansiyuan123456@qq.com".chars() {
+            polluted.push(c);
+            polluted.push('\0');
+        }
+        polluted.push_str("\r\0\n\0");
+
+        assert_eq!(normalize_email(&polluted), "pyrpansiyuan123456@qq.com");
+        assert!(validate_email(&normalize_email(&polluted)).is_ok());
+        // 也能解释「长度翻倍」：清洗前字符数接近两倍
+        assert!(polluted.chars().count() > 45);
+    }
+
+    /// 每一种污染单独拎出来也要能修
+    #[test]
+    fn all_pollution_is_scrubbed() {
+        // NUL（UTF-16 残留）
+        assert_eq!(normalize_email("a\0@\0q\0q\0.\0c\0o\0m\0"), "a@qq.com");
+        // U+FFFD（无效字节的 lossy 替换符）
+        assert_eq!(normalize_email("\u{FFFD}\u{FFFD}a@qq.com"), "a@qq.com");
+        // 三者叠加
+        assert_eq!(normalize_email("\u{FFFD}a\0@\0q\0q\0.\u{FFFD}c\0o\0m\0"), "a@qq.com");
+    }
+
+    /// 用户截图里那个串：`qq.` 和 `com` 之间**多了一个空格**。
     /// 空白在邮箱里没有任何合法位置，必须被自动删掉（不是只 trim 首尾）。
     #[test]
     fn stray_space_is_removed() {

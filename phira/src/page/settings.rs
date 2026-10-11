@@ -624,6 +624,9 @@ impl GeneralList {
                 //    而不是把服务端的 protobuf 报错原样糊出来。
                 let email = crate::huamei::normalize_email(&text);
                 if let Err(msg) = crate::huamei::validate_email(&email) {
+                    // 把原貌落盘 —— 不可见字符（\r、NUL、BOM）在屏幕上根本看不出来，
+                    // 只有文件里的转义形式能说清「59 个字符」是哪来的。
+                    crate::huamei::log_login_debug("email", &text, &email);
                     show_error(anyhow::anyhow!("{msg}"));
                     return Ok(false);
                 }
