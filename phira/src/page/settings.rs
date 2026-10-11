@@ -627,6 +627,10 @@ impl GeneralList {
                     show_error(anyhow::anyhow!("{msg}"));
                     return Ok(false);
                 }
+                // 输入被修正过就说一声 —— 空格/全角肉眼看不出，不说明白用户会以为我们改了别的东西
+                if email != text {
+                    show_message(format!("已自动修正为 {email}")).ok();
+                }
                 self.huamei_stage = HuameiStage::Sending;
                 self.huamei_task = Some(Task::new(crate::huamei::start_login(email)));
                 return Ok(true);

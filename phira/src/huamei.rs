@@ -292,37 +292,54 @@ pub fn validate_email(email: &str) -> std::result::Result<(), String> {
     if e.is_empty() {
         return Err("邮箱不能为空".into());
     }
+    /* ⚠ 每个错误都带上**实际拿到的串**。
+       这条规则是血换来的：2026-10-11 用户报「显示 @ 前面要是 1–40 个字符」，
+       但截图里输入的是 `pyzpansiyuan123456@qq. com`（18 个字符的 local，
+       含一个空格）—— 和那条消息**对不上**，因为消息没带证据，
+       谁也说不清那次到底传了什么。现在不允许再出现这种无从对证的情况。 */
+    let shown = if e.chars().count() > 60 {
+        format!("{}…", e.chars().take(60).collect::<String>())
+    } else {
+        e.to_owned()
+    };
     let Some((local, domain)) = e.split_once('@') else {
         return Err(if e.contains('＠') {
-            "你把 @ 打成了全角「＠」—— 换成半角 @".into()
+            format!("「{shown}」里的 @ 是全角「＠」—— 换成半角 @")
         } else {
-            "要写成 name@example.com 这种形式".into()
+            format!("「{shown}」里没有 @ —— 要写成 name@example.com")
         });
     };
-    if local.is_empty() || local.chars().count() > 40 {
-        return Err("@ 前面要是 1–40 个字符".into());
+    if local.is_empty() {
+        return Err(format!("「{shown}」的 @ 前面是空的"));
+    }
+    let n_local = local.chars().count();
+    if n_local > 40 {
+        return Err(format!("@ 前面有 {n_local} 个字符，服务端最多允许 40 个"));
+    }
+    if domain.contains('@') {
+        return Err(format!("「{shown}」里有不止一个 @"));
     }
     if let Some(c) = local
         .chars()
         .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
     {
         return Err(format!(
-            "@ 前面不能有「{c}」—— 只允许英文、数字、点、下划线、减号。\
+            "「{shown}」：@ 前面不能有「{c}」—— 只允许英文、数字、点、下划线、减号。\
              ⚠ 不支持加号别名（name+tag@…），请用主邮箱地址"
         ));
     }
     if domain.is_empty() || !domain.contains('.') {
-        return Err("域名部分要带点，例如 qq.com".into());
+        return Err(format!("「{shown}」：域名部分要带点，例如 qq.com"));
     }
     if let Some(c) = domain
         .chars()
         .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-')))
     {
-        return Err(format!("域名里不能有「{c}」"));
+        return Err(format!("「{shown}」：域名里不能有「{c}」"));
     }
     let tld = domain.rsplit('.').next().unwrap_or("");
     if tld.len() < 2 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
-        return Err("域名后缀要至少 2 个英文字母，例如 .com".into());
+        return Err(format!("「{shown}」：域名后缀要至少 2 个英文字母，例如 .com"));
     }
     Ok(())
 }
@@ -341,21 +358,24 @@ pub fn validate_email(email: &str) -> std::result::Result<(), String> {
 ///   它们是复制粘贴时的常见污染。
 pub fn normalize_email(raw: &str) -> String {
     raw.chars()
-        .filter(|c| !matches!(*c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
         .map(|c| {
             let u = c as u32;
             if (0xFF01..=0xFF5E).contains(&u) {
                 // 全角 ASCII 区块 → 半角（＠→@，．→.，０→0，ａ→a …）
                 char::from_u32(u - 0xFEE0).unwrap_or(c)
-            } else if u == 0x3000 {
-                ' '
             } else {
                 c
             }
         })
+        // ⚠ **邮箱里出现任何空白都是误触，一律删掉。**
+        //   实测用户打出来的就是 `pyzpansiyuan123456@qq. com` ——
+        //   在 `qq.` 和 `com` 之间多了一个空格，肉眼极难发现。
+        //   这里不只 trim 首尾，是**全串剔除**：空白在邮箱里没有任何合法位置。
+        //   （`char::is_whitespace` 按 Unicode White_Space 属性，含全角空格 U+3000。）
+        .filter(|c| !c.is_whitespace())
+        // 零宽字符：复制粘贴的常见污染，同样删掉
+        .filter(|c| !matches!(*c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
         .collect::<String>()
-        .trim()
-        .to_owned()
 }
 
 /// 发起第一步：发验证码。
@@ -450,17 +470,40 @@ mod tests {
         assert!(validate_email("a.b_c-d@qq.com").is_ok());
     }
 
-    /// 实测被服务端拒绝的（见 validate_email 的表格）
+    /// 实测被服务端拒绝的（见 validate_email 的文档表格）
     #[test]
     fn known_bad_emails_rejected() {
         assert!(validate_email("a+b@qq.com").is_err(), "+ 别名服务端不收");
         assert!(validate_email("测试@qq.com").is_err());
         assert!(validate_email("a@qq").is_err());
-        assert!(validate_email("a b@qq.com").is_err());
         assert!(validate_email("").is_err());
+        assert!(validate_email("a@@qq.com").is_err(), "两个 @");
         // 提示要指出具体是哪个字符
         let e = validate_email("a+b@qq.com").unwrap_err();
         assert!(e.contains('+'), "提示里要出现那个字符：{e}");
+    }
+
+    /// ⚠ 用户 2026-10-11 截图里的那个串：`qq.` 和 `com` 之间**多了一个空格**。
+    /// 空白在邮箱里没有任何合法位置，必须被自动删掉（不是只 trim 首尾）。
+    #[test]
+    fn stray_space_is_removed() {
+        assert_eq!(normalize_email("pyzpansiyuan123456@qq. com"), "pyzpansiyuan123456@qq.com");
+        assert!(validate_email(&normalize_email("pyzpansiyuan123456@qq. com")).is_ok());
+        // 首尾空白、中间空白、全角空格、制表符、换行 —— 一律清掉
+        assert_eq!(normalize_email("  a @ qq . com \n"), "a@qq.com");
+        assert_eq!(normalize_email("a@qq.com\t"), "a@qq.com");
+        assert_eq!(normalize_email("a@qq.com\u{3000}"), "a@qq.com");
+    }
+
+    /// 每条错误都必须带**实际拿到的串** —— 否则出了问题无从对证。
+    /// （起因：用户报的那条消息和截图里的输入对不上，谁也说不清传了什么。）
+    #[test]
+    fn error_carries_the_actual_input() {
+        let e = validate_email("pyrpansiyuan123456@qq. com").unwrap_err();
+        assert!(e.contains("pyrpansiyuan123456"), "错误里要带实际串：{e}");
+        assert!(e.contains(' '), "并且要指出是空格：{e}");
+        let e2 = validate_email("aaaa").unwrap_err();
+        assert!(e2.contains("aaaa"), "错误里要带实际串：{e2}");
     }
 
     /// 全角折算 —— 输入法切全角是这个 bug 最可能的成因
@@ -469,9 +512,8 @@ mod tests {
         let full = "ｐｙｚｐａｎｓｉｙｕａｎ１２３４５６＠ｑｑ．ｃｏｍ";
         assert_eq!(normalize_email(full), "pyzpansiyuan123456@qq.com");
         assert!(validate_email(&normalize_email(full)).is_ok());
-        // 全角空格 / 零宽字符也要清掉
+        // 零宽字符也要清掉
         assert_eq!(normalize_email("  a@qq.com\u{200B} "), "a@qq.com");
-        assert_eq!(normalize_email("a@qq.com\u{3000}"), "a@qq.com");
         // 半角原样不动
         assert_eq!(normalize_email("a@qq.com"), "a@qq.com");
     }
