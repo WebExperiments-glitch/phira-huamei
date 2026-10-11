@@ -137,6 +137,20 @@ pub struct Data {
 
     #[serde(skip)]
     collection_cache: DashMap<Uuid, Arc<LocalCollection>>,
+
+    // ══════════════════════════════════════════════════════════════
+    // 【huamei 新增】huamei 账号
+    // ══════════════════════════════════════════════════════════════
+    /// huamei 账号的 access token。
+    ///
+    /// ⚠ 与上面的 `tokens`（Phira 官方账号的 token 对）**完全独立** ——
+    /// 本客户端只登 huamei，Phira 那边没有任何用户凭据（取谱走服务端代理）。
+    /// 两者混用会串号。
+    #[serde(default)]
+    pub huamei_token: Option<String>,
+    /// 已登录的 huamei 邮箱，仅供界面显示
+    #[serde(default)]
+    pub huamei_email: Option<String>,
 }
 
 impl Data {

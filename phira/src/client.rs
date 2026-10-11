@@ -23,7 +23,40 @@ static CLIENT: Lazy<ArcSwap<reqwest::Client>> = Lazy::new(|| ArcSwap::from_point
 pub struct Client;
 
 // pub const API_URL: &str = "http://localhost:2924";
-pub const API_URL: &str = "https://phira.5wyxi.com";
+//
+// 【huamei 改动】指向我们自己的**取谱代理**，而不是 Phira 官方。
+// 客户端因此不持有任何 Phira 凭据 —— 浏览谱面所需的凭据由服务端代持，
+// 用户只需要一个 huamei 账号。
+//
+// 编译时可用 `HUAMEI_API_BASE` 覆盖（配合 phira/build.rs 的
+// `cargo:rerun-if-env-changed`），方便对本地服务端调试：
+//   HUAMEI_API_BASE=http://127.0.0.1:5199/api/phira cargo build -p phira-main
+pub const API_URL: &str = match option_env!("HUAMEI_API_BASE") {
+    Some(v) => v,
+    None => "https://phm.app.workbuddy.host/api/phira",
+};
+
+/// huamei 客户端版本 —— **独立于上游 0.8.2 的版本轴**。
+/// ⚠ 别去动 `Cargo.toml` 的 version：`phira-main/build.rs` 会强制校验它等于
+/// `xcode/Shared.xcconfig` 的 `MARKETING_VERSION`，不一致就编译期 panic。
+/// 我们的版本号单独放这里，只用于上报与展示。
+pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.1";
+
+/// 站点根 —— 取谱代理、云端鉴权、成绩上报都挂在它下面。
+///
+/// ⚠ `/.cloud/*` 由**平台边缘**接管（不是我们的 `server.mjs`），
+///   所以带不带 Origin 都能通；实测裸请求只要头对就 200/401 正常。
+pub const HUAMEI_SITE: &str = match option_env!("HUAMEI_SITE") {
+    Some(v) => v,
+    None => "https://phm.app.workbuddy.host",
+};
+
+/// 云服务的**可发布密钥** —— 只标识「哪个应用」，本身不含权限
+/// （服务端另做精确 Origin 校验）。它出现在前端源码里是设计如此。
+///
+/// ⚠ 请求头名是 `x-wb-webapp-access-key`，**不是** `apikey`。
+///   用 `apikey` 会得到 `invalid_client: the client credential is invalid or revoked`。
+pub const HUAMEI_PUBLISHABLE_KEY: &str = "wbpk_TRm3Cbt5VeYHHDwUL854jr_5Xi69EqYG18sPzQnMMJhJr08x67NoE3b";
 
 pub fn basic_client_builder() -> ClientBuilder {
     let policy = reqwest::redirect::Policy::custom(|attempt| {

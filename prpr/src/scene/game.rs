@@ -943,23 +943,53 @@ impl Scene for GameScene {
             State::Ending => {
                 let t = time - self.res.track_length - WAIT_TIME;
                 if t >= AFTER_TIME + 0.3 {
+                    let result = self.judge.result();
                     let mut record_data = None;
-                    // TODO strengthen the protection
-                    #[cfg(closed)]
-                    if let Some(upload_fn) = &self.upload_fn {
-                        if !self.res.config.offline_mode
-                            && !self.res.config.mods.intersects(Mods::UNRATED)
-                            && !self.res.config.use_keyboard
-                            && self.res.config.speed >= 1.0 - 1e-3
-                        {
-                            if let Some(player) = &self.player {
-                                if let Some(chart) = &self.res.info.id {
-                                    record_data = Some(encode_record(self, player.id, *chart));
-                                }
+
+                    // ══════════════════════════════════════════════════════
+                    // 【huamei 改动】数据飞轮的上报载荷
+                    // ══════════════════════════════════════════════════════
+                    // 上游把整段上报包在 `#[cfg(closed)]` 里 —— 闭源构建才有的
+                    // `encode_record` + 服务端 `/play/upload`。开源构建里
+                    // `rated` 恒为 false，从来不上传（`song.rs:861`）。
+                    //
+                    // 我们不要官方那套加密 blob，只要**逐音符判定**。
+                    // 管道原样复用：`record_data` → `EndingScene` → `upload_fn`，
+                    // 我们只负责把载荷换掉。所以这里也**不再需要 `upload_fn` 非空**
+                    // ——那是官方的发送器；我们的发送器在 phira 侧。
+                    //
+                    // ⚠ 与上游守卫的两点差别：
+                    //   · 去掉 `player` 要求 —— huamei 只登自己的账号，
+                    //     没有 Phira player id（身份由 HTTP token 承载）
+                    //   · 去掉 `use_keyboard` 拒绝 —— 桌面端键盘是正当玩法，
+                    //     改成打标记上传，由服务端分层
+                    //   保留 `offline_mode` / `UNRATED` / `speed >= 1.0`：
+                    //   变速或带非评级 MOD 的判定数据不可比，收了会污染数据集。
+                    if !self.res.config.offline_mode
+                        && !self.res.config.mods.intersects(Mods::UNRATED)
+                        && self.res.config.speed >= 1.0 - 1e-3
+                    {
+                        if let Some(chart_id) = self.res.info.id {
+                            // level 是展示串（形如 "IN  Lv.14.3"），取首个词当难度标签
+                            let level = self.res.info.level.split_whitespace().next().unwrap_or("").to_owned();
+                            let payload = crate::huamei::build_payload(
+                                chart_id,
+                                &level,
+                                result.num_of_notes,
+                                &result,
+                                self.res.config.speed,
+                                self.res.config.mods.bits(),
+                                self.res.config.use_keyboard,
+                                crate::huamei::encode_judgements(&self.judge),
+                            );
+                            match payload.to_json_bytes() {
+                                Ok(bytes) => record_data = Some(bytes),
+                                Err(err) => warn!("huamei: 对局载荷序列化失败：{err}"),
                             }
                         }
                     }
-                    let result = self.judge.result();
+                    // ══════════════════════════════════════════════════════
+
                     let record = if self.res.config.mods.intersects(Mods::UNRATED) || self.res.config.speed < 1.0 - 1e-3 {
                         None
                     } else {

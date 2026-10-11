@@ -14,6 +14,11 @@ fn git_stdout(args: &[&str]) -> Option<String> {
 fn main() {
     dotenv_build::output(dotenv_build::Config::default()).unwrap();
 
+    // 【huamei 改动】`client.rs` 的 API_URL 用 option_env! 读这个变量，
+    // 不声明的话改了它 cargo 不会重新编译。
+    println!("cargo:rerun-if-env-changed=HUAMEI_API_BASE");
+    println!("cargo:rerun-if-env-changed=HUAMEI_API_BASE_TOKEN");
+
     let git_dir = git_stdout(&["rev-parse", "--git-dir"]).unwrap_or_else(|| ".git".to_string());
     println!("cargo:rerun-if-changed={}/HEAD", git_dir);
     println!("cargo:rerun-if-changed={}/packed-refs", git_dir);

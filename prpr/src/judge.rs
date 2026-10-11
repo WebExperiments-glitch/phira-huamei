@@ -265,7 +265,20 @@ pub mod inner;
 #[cfg(closed)]
 use inner::*;
 
-type Judgements = Vec<(f64, u32, u32, Result<Judgement, bool>)>;
+/// 一次**真判定**的完整记录。
+///
+/// 【huamei 改动】上游这里原本只存 `Judgement`，把 `diff`（判定时刻相对音符
+/// 时刻的偏移，秒，负=早 正=晚）丢掉了 —— 而偏移正是「为什么失分」的关键信号
+/// （整段偏早 = 读谱问题；零散偏晚 = 手速问题）。
+/// 现在把它和判定绑在同一个结构体里，而不是另开一个并行数组：
+/// 多人模式会 `drain(..)` 掉 `judgements`，并行数组会在那里失同步。
+#[derive(Clone, Copy, Debug)]
+pub struct JudgeHit {
+    pub judgement: Judgement,
+    pub diff: f64,
+}
+
+type Judgements = Vec<(f64, u32, u32, Result<JudgeHit, bool>)>;
 
 #[repr(C)]
 pub struct Judge {
@@ -345,7 +358,16 @@ impl Judge {
     }
 
     pub fn commit(&mut self, t: f64, what: Judgement, line_id: u32, note_id: u32, diff: f64) {
-        self.judgements.borrow_mut().push((t, line_id, note_id, Ok(what)));
+        // 【huamei 改动】把 diff 一起留下（上游只存 what）
+        self.judgements.borrow_mut().push((
+            t,
+            line_id,
+            note_id,
+            Ok(JudgeHit {
+                judgement: what,
+                diff,
+            }),
+        ));
         self.inner.commit(what, diff);
     }
 

@@ -4,6 +4,9 @@ pub mod core;
 pub mod dir;
 pub mod ext;
 pub mod fs;
+/// 【huamei 新增】数据飞轮的对局记录格式与紧凑编码。
+/// 契约见 `docs/规范/数据飞轮契约.md`。
+pub mod huamei;
 pub mod info;
 pub mod judge;
 pub mod parse;

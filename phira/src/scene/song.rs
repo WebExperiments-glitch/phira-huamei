@@ -25,7 +25,6 @@ use crate::{
 };
 use ::rand::{thread_rng, Rng};
 use anyhow::{bail, Context, Error, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use core::f32;
 use futures_util::StreamExt;
@@ -42,7 +41,7 @@ use prpr::{
     },
     fs::{self},
     info::ChartInfo,
-    judge::{icon_index, Judge},
+    judge::{icon_index, Judge, JudgeHit},
     scene::{
         request_file, request_input, return_file, return_input, show_error, show_message, take_file, take_input, BasicPlayer, GameMode, LoadingScene,
         LocalSceneTask, NextScene, RecordUpdateState, SaveFn, Scene, SimpleRecord, UpdateFn, UploadFn,
@@ -55,7 +54,7 @@ use regex::Regex;
 use reqwest::Method;
 use sanitize_filename::sanitize;
 use sasa::{AudioClip, Frame, Music, MusicParams};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
@@ -948,11 +947,14 @@ impl SongScene {
                             judgement: {
                                 use phira_mp_common::Judgement::*;
                                 use prpr::judge::Judgement as OJ;
+                                // 【huamei 改动】`Ok` 的载荷从 `Judgement` 变成
+                                // `JudgeHit { judgement, diff }`（我们要保留时间偏移）。
+                                // 多人协议只传判定，偏移在这里丢弃。
                                 match it.3 {
-                                    Ok(OJ::Perfect) => Perfect,
-                                    Ok(OJ::Good) => Good,
-                                    Ok(OJ::Bad) => Bad,
-                                    Ok(OJ::Miss) => Miss,
+                                    Ok(JudgeHit { judgement: OJ::Perfect, .. }) => Perfect,
+                                    Ok(JudgeHit { judgement: OJ::Good, .. }) => Good,
+                                    Ok(JudgeHit { judgement: OJ::Bad, .. }) => Bad,
+                                    Ok(JudgeHit { judgement: OJ::Miss, .. }) => Miss,
                                     Err(true) => HoldPerfect,
                                     Err(false) => HoldGood,
                                 }
@@ -1009,7 +1011,6 @@ impl SongScene {
                     Some(format!("{}/{}", dir::respacks()?, get_data().respacks[id - 1]))
                 }
             };
-            let chart_updated = info.chart_updated;
             config.mods = mods;
             let preload = LoadingScene::load(fs.as_mut(), &info.illustration).await?;
             if let Some(output) = background_output {
@@ -1021,44 +1022,58 @@ impl SongScene {
                 rks: it.rks,
                 historic_best: record.map_or(0, |it| it.score as u32),
             });
-            let upload_fn: Option<UploadFn> = Some(Arc::new(move |data: Vec<u8>| {
-                Task::new(async move {
-                    #[derive(Serialize)]
-                    #[serde(rename_all = "camelCase")]
-                    struct Req {
-                        chart: i32,
-                        token: String,
-                        chart_updated: Option<DateTime<Utc>>,
-                    }
-                    #[derive(Deserialize)]
-                    #[serde(rename_all = "camelCase")]
-                    struct Resp {
-                        id: i32,
-                        exp_delta: f64,
-                        new_best: bool,
-                        improvement: u32,
-                        new_rks: f32,
-                    }
-                    let resp: Resp = recv_raw(Client::post(
-                        "/play/upload",
-                        &Req {
-                            chart: id.unwrap(),
-                            token: STANDARD.encode(data),
-                            chart_updated,
-                        },
-                    ))
-                    .await?
-                    .json()
-                    .await?;
-                    RECORD_ID.store(resp.id, Ordering::Relaxed);
-                    Ok(RecordUpdateState {
-                        best: resp.new_best,
-                        improvement: resp.improvement,
-                        gain_exp: resp.exp_delta as f32,
-                        new_rks: Some(resp.new_rks),
+
+            // ══════════════════════════════════════════════════════════
+            // 【huamei 改动】统计上报
+            // ══════════════════════════════════════════════════════════
+            // 上游这里 post 到 `/play/upload`（Phira 官方），载荷是闭源的
+            // `encode_record` blob。我们整段换成自己的：
+            //   · 载荷由 prpr 侧组装（逐音符判定，见 prpr/src/huamei.rs）
+            //   · 这里补上**谱面摘要** —— 只有这里读得到谱面原始字节
+            //   · 发到我们自己的 `/api/hm/play`
+            //
+            // 谱面摘要 = sha256(谱面文件字节) 的 hex，与 Phira 官方
+            // `/chart/{id}/verify-cksum` 同一算法（本文件 update_cksum_task 里
+            // 已有同样写法）。服务端据此判断谱面有没有被改过。
+            let huamei_digest: Option<String> = match fs.load_file(&info.chart).await {
+                Ok(bytes) => {
+                    use hex::ToHex;
+                    Some(Sha256::digest(&bytes).encode_hex())
+                }
+                Err(err) => {
+                    warn!("huamei: 读不到谱面文件，摘要留空（服务端会拒收）：{err}");
+                    None
+                }
+            };
+            // 没登录就不建发送器 —— 这样结算页不会因为我们没上传而弹错误框。
+            // （`EndingScene` 用 `upload_fn.and_then(record_data)` 决定要不要发。）
+            let upload_fn: Option<UploadFn> = if crate::huamei::current_token().is_some() {
+                Some(Arc::new(move |data: Vec<u8>| {
+                    let digest = huamei_digest.clone();
+                    Task::new(async move {
+                        let resp = crate::huamei::upload_play(&data, digest).await?;
+                        if !resp.ok {
+                            anyhow::bail!(
+                                "服务端拒收：{}",
+                                resp.error.as_deref().unwrap_or("未知原因")
+                            );
+                        }
+                        // huamei 暂不做排名/RKS，只回一个中性状态，避免结算页
+                        // 显示官方的「新纪录 +EXP」那套。
+                        Ok(RecordUpdateState {
+                            best: false,
+                            improvement: 0,
+                            gain_exp: 0.,
+                            new_rks: None,
+                        })
                     })
-                })
-            }));
+                }))
+            } else {
+                debug!("huamei: 未登录，跳过本局上报");
+                None
+            };
+            // ══════════════════════════════════════════════════════════
+
             if is_unlock {
                 #[cfg(not(feature = "video"))]
                 {
