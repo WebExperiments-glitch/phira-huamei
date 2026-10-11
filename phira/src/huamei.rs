@@ -360,37 +360,79 @@ pub fn validate_email(email: &str) -> std::result::Result<(), String> {
 ///
 ///   这里顺手也把 U+3000（全角空格）和零宽字符（U+200B/200C/200D/FEFF）去掉，
 ///   它们是复制粘贴时的常见污染。
+/// 从对话框回传的整段文本里**抠出邮箱** —— 去掉前面的进程噪声。
+///
+/// ══════════════════════════════════════════════════════════════
+/// 【为什么会有噪声 —— 2026-10-11 实测（`data/huamei-login.log`）】
+/// ══════════════════════════════════════════════════════════════
+/// ```text
+/// raw = "[WARNING] Ignore caches that are heterogeneous\r\npyzpansiyuan123456@qq.com"
+/// ```
+/// 那个 WinForms 输入框（`inputbox` crate）读的是**子进程 stdout 全文**，
+/// 而子进程（系统脚本宿主）在初始化 WinForms/GDI+ 时会把它**自己**的
+/// 显卡驱动/字体缓存告警也写进 stdout —— 于是它和文本框内容粘在一起。
+///
+/// 这就是「只输了 18 个字符却报 59 个」的**第二层**原因（第一层是 UTF-16）。
+///
+/// 【抠取规则：取「最后一行里含 `@` 的那一行」】
+///   脚本是**最后**才写文本框内容的 → 真值在末尾；
+///   噪声（日志/告警）都是**整行**的 → 用换行切就够。
+///
+/// ⚠ **不能改用「从 @ 向左右扩到空白边界」** —— 那条规则会和另一个真实需求冲突：
+///   用户在 `qq. com` 中间多打一个空格时，那个空格也是"边界"，
+///   会把 `com` 直接切掉（实测踩过：切出来是 `…@qq.`）。
+///   按行切 + 之后统一删空白，两个场景才都对。
+///
+/// ⚠ 找不到带 `@` 的行就退回整串（清洗后），交给 `validate_email` 报错 ——
+///   **绝不猜**，宁可不发也不发一个错的地址。
+pub fn extract_email(text: &str) -> String {
+    // 逐行清洗：删空白、NUL/U+FFFD、零宽字符
+    let clean = |s: &str| -> String {
+        s.chars()
+            .filter(|c| !c.is_whitespace())
+            .filter(|c| !matches!(*c, '\0' | '\u{FFFD}'))
+            .filter(|c| !matches!(*c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
+            .collect()
+    };
+    // 从后往前找第一个「清洗后仍然非空且含 @」的行
+    if let Some(line) = text
+        .lines()
+        .rev()
+        .map(clean)
+        .find(|l| !l.is_empty() && l.contains('@'))
+    {
+        return line;
+    }
+    clean(text)
+}
+
 /// 把输入框吐出来的东西洗成一个正常的邮箱串。
 ///
 /// ══════════════════════════════════════════════════════════════
-/// 【2026-10-11 实测到的真凶：UTF-16 被当成 UTF-8 读】
+/// 【这个输入框有两层坑，都实测到了】
 /// ══════════════════════════════════════════════════════════════
-/// 输入框在 Windows 上是 `inputbox` crate 跑一个 PowerShell + WinForms 脚本，
-/// 而 Rust 侧取的是 **`output.stdout` 的全部内容**当返回值：
+/// **第一层：UTF-16 被当成 UTF-8 读。**
+/// Windows 上输入框是 `inputbox` crate 跑系统脚本宿主 + WinForms，
+/// Rust 侧取的是 `output.stdout` 的全部内容：
 /// ```ignore
 /// Some(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
 /// ```
-/// 问题是 PowerShell **按 UTF-16 LE（带 BOM）写出**，实测原始字节是：
+/// 而宿主**按 UTF-16 LE（带 BOM）写出**，实测原始字节：
 /// ```text
-/// ff fe | 70 00 79 00 72 00 ... | 0d 00 0a 00
-///  BOM  | p  \0  y  \0  r  \0 ...| \r \0 \n \0
+/// ff fe | 70 00 79 00 72 00 | 0d 00 0a 00
+///  BOM  |  p \0  y \0  r \0 |  \r \0 \n \0
 /// ```
-/// 按 UTF-8 读就变成：
-/// `\u{FFFD}\u{FFFD}p\0y\0r\0p\0a\0n\0…@\0q\0q\0.\0c\0o\0m\0`
-/// —— **每个字符后面多一个 NUL，长度翻倍**，屏幕上完全看不出来。
+/// 按 UTF-8 读 → `\u{FFFD}\u{FFFD}p\0y\0r\0…`
+/// —— **每个字符后面多一个 NUL，长度接近翻倍**。
 ///
-/// 这就是「明明只输了 18 个字符，程序却说 59 个」的由来。
+/// **第二层：子进程自己的告警粘在文本前面**（见 `extract_email`）。
 ///
-/// 【所以这里要顺手清掉三样东西】
-///   · `\0`     —— UTF-16 残留。邮箱里不可能有 NUL，删掉即可还原原串
-///   · `U+FFFD` —— BOM 等无效字节的 lossy 替换符，同样不可能出现在邮箱里
-///   · 空白     —— 空格/全角空格/制表符/换行，用户在 `qq. com` 中间多打一个空格是真踩过的
-///
-/// 顺序要紧：**先全角折半角 → 再剔 NUL/FFFD/空白/零宽**。
-/// ⚠ 对非 ASCII（中文）输入，UTF-16 的每个汉字会被拆成两个无效字节 → 两个 FFFD，
-///   信息已经丢了，还原不回来。但邮箱本来就是 ASCII，这条链路上够用。
+/// 【顺序不能乱】
+///   1. 全角折半角（输入法切全角是真踩过的）
+///   2. 逐行清洗并抠出邮箱（`extract_email`）—— 顺带把空白/NUL/FFFD/零宽全清掉
 pub fn normalize_email(raw: &str) -> String {
-    raw.chars()
+    let folded: String = raw
+        .chars()
         .map(|c| {
             let u = c as u32;
             if (0xFF01..=0xFF5E).contains(&u) {
@@ -400,10 +442,8 @@ pub fn normalize_email(raw: &str) -> String {
                 c
             }
         })
-        .filter(|c| !c.is_whitespace())
-        .filter(|c| !matches!(*c, '\0' | '\u{FFFD}'))
-        .filter(|c| !matches!(*c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
-        .collect::<String>()
+        .collect();
+    extract_email(&folded)
 }
 
 /// 诊断用的字符串表示：用 `{:?}` 转义，**不可见字符会显形**。
@@ -581,6 +621,30 @@ mod tests {
         assert!(validate_email(&normalize_email(&polluted)).is_ok());
         // 也能解释「长度翻倍」：清洗前字符数接近两倍
         assert!(polluted.chars().count() > 45);
+    }
+
+    /// ⚠⚠ **实测抓到的第二层污染**：子进程自己的告警粘在文本前面。
+    /// 这一条用 `data/huamei-login.log` 里那行**原样**的真实数据做用例。
+    #[test]
+    fn extracts_email_from_process_noise() {
+        let raw = "[WARNING] Ignore caches that are heterogeneous\r\npyzpansiyuan123456@qq.com";
+        assert_eq!(normalize_email(raw), "pyzpansiyuan123456@qq.com");
+        assert!(validate_email(&normalize_email(raw)).is_ok());
+
+        // 多行噪声也要能切
+        assert_eq!(normalize_email("line one\nline two\n   \n  a@qq.com  \n"), "a@qq.com");
+        // ⚠ 两个需求会打架：噪声按行切，但**地址中间的空格要保留不住** ——
+        //   `qq. com` 里的空格不是行边界，所以整行清洗后仍然修得回来。
+        assert_eq!(normalize_email("noise line\r\npyr@qq. com"), "pyr@qq.com");
+    }
+
+    /// 抠不出邮箱时**绝不猜** —— 退回整串，交给校验报错
+    #[test]
+    fn never_guesses_when_unparseable() {
+        assert_eq!(normalize_email("no at sign here"), "noatsignhere");
+        assert!(validate_email(&normalize_email("no at sign here")).is_err());
+        assert_eq!(normalize_email(""), "");
+        assert!(validate_email("").is_err());
     }
 
     /// 每一种污染单独拎出来也要能修
