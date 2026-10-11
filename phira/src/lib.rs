@@ -5,6 +5,9 @@ prpr_l10n::tl_file!("common" ttl crate::);
 mod inner;
 
 mod anim;
+/// 【huamei 新增】内嵌的 assets 清单（由 `huamei-tools/gen-embedded-assets.py` 生成）。
+/// 让 exe 可以单文件分发 —— 见 `ensure_embedded_assets()`。
+mod assets_embedded;
 mod censor;
 mod charts_view;
 mod client;
@@ -116,6 +119,61 @@ pub fn save_data() -> Result<()> {
     Ok(())
 }
 
+/// 【huamei 新增】首次运行时把内嵌的 assets 释放到 exe 旁边，让 exe 能**单文件分发**。
+///
+/// 【为什么必须落盘，而不是在内存里读】
+///   Phira 通过 macroquad 的 `load_file("assets/...")` 读资源，而这个
+///   macroquad fork **没有**自定义文件加载钩子（`macroquad::file` 只有
+///   `set_pc_assets_folder`），拦不住那 77 个读取点（贴图/音频/字体/图标）。
+///   所以只能「编进二进制 → 释放到磁盘 → 照常读」。
+///
+/// 【为什么先往上找一遍】
+///   开发时 exe 在 `target/release/`，资源在仓库根 —— 上游的 `init_assets()`
+///   本来就是靠「从 exe 往上找含 assets/ 的目录」来定位的。
+///   这里**必须先走同一条逻辑**，否则开发时会被判定成「单文件分发」，
+///   把 11MB 释放进 `target/release/`，连带把 `data/`（谱面、配置）
+///   也搬过去 —— 那是行为变更，不是修 bug。
+///
+/// 失败不致命：释放不了就原样继续，让 `init_assets()` 抛出那个更明确的
+/// `Couldn't load file assets\...` 错误。
+fn ensure_embedded_assets() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Some(dir) = exe.parent() else { return };
+
+    // ① 沿上游的逻辑往上找 —— 有就直接用，一个字节都不写
+    let mut probe = dir.to_path_buf();
+    loop {
+        if probe.join("assets").join("phigros.ttf").exists() {
+            return;
+        }
+        if !probe.pop() {
+            break;
+        }
+    }
+
+    // ② 往上都没有 → 单文件分发场景，释放到 exe 旁边
+    //    （exe 所在目录可能不可写，比如 Program Files → 退到用户临时目录）
+    if unpack_assets(&dir.join("assets")).is_err() {
+        let fallback = std::env::temp_dir().join("phm-huamei");
+        if unpack_assets(&fallback.join("assets")).is_ok() {
+            let _ = std::env::set_current_dir(&fallback);
+        }
+        return;
+    }
+    // 释放成功 → 交给 init_assets()，它会自己 chdir 到含 assets/ 的那一层
+}
+
+fn unpack_assets(root: &std::path::Path) -> std::io::Result<()> {
+    for (rel, data) in assets_embedded::ASSETS {
+        let p = root.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&p, data)?;
+    }
+    Ok(())
+}
+
 mod dir {
     use anyhow::Result;
 
@@ -180,6 +238,7 @@ async fn the_main() -> Result<()> {
         prpr::core::DPI_VALUE.store(250, std::sync::atomic::Ordering::Relaxed);
     };
 
+    ensure_embedded_assets();
     init_assets();
 
     let rt = tokio::runtime::Builder::new_multi_thread()

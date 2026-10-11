@@ -400,8 +400,40 @@ struct GeneralList {
     enable_anys_btn: DRectButton,
     anys_gateway_btn: DRectButton,
 
+    // ── 【huamei 新增】账号 ──
+    huamei_btn: DRectButton,
+    huamei_stage: HuameiStage,
+    huamei_task: Option<Task<Result<crate::huamei::Step>>>,
+
     cache_size: Option<u64>,
     cache_task: Option<Task<Result<u64>>>,
+}
+
+/// 【huamei】设置页那一行按钮的登录状态。
+///
+/// 只用内置的文本输入框（`request_input` / `take_input`）驱动，
+/// 不新造面板 —— 上游那个 `Login` 面板（1000 行）是强绑 Phira 账号 API 的，
+/// 硬塞进来会把两套账号体系搅在一起。
+#[derive(Default)]
+enum HuameiStage {
+    #[default]
+    Idle,
+    /// 正在发验证码
+    Sending,
+    /// 验证码已发出，等用户输入
+    WaitCode {
+        verification_id: String,
+        email: String,
+        is_existing: bool,
+    },
+    /// 正在校验验证码
+    Verifying,
+}
+
+impl HuameiStage {
+    fn busy(&self) -> bool {
+        matches!(self, HuameiStage::Sending | HuameiStage::Verifying)
+    }
 }
 
 impl GeneralList {
@@ -434,6 +466,10 @@ impl GeneralList {
             insecure_btn: DRectButton::new(),
             enable_anys_btn: DRectButton::new(),
             anys_gateway_btn: DRectButton::new(),
+
+            huamei_btn: DRectButton::new(),
+            huamei_stage: HuameiStage::default(),
+            huamei_task: None,
 
             cache_size: None,
             cache_task: None,
@@ -532,6 +568,27 @@ impl GeneralList {
             request_input("anys_gateway", InputBox::new().default_text(&data.anys_gateway));
             return Ok(Some(true));
         }
+        // ── 【huamei】账号按钮：已登录就登出，未登录就开始发验证码 ──
+        if self.huamei_btn.touch(touch, t) {
+            if self.huamei_stage.busy() {
+                return Ok(Some(true));
+            }
+            if crate::huamei::current_token().is_some() {
+                let d = get_data_mut();
+                d.huamei_token = None;
+                d.huamei_email = None;
+                save_data()?;
+                show_message("已退出 huamei 账号").ok();
+            } else {
+                request_input(
+                    "huamei_email",
+                    InputBox::new()
+                        .title(Cow::Borrowed("huamei 账号"))
+                        .prompt(Cow::Borrowed("邮箱（用于接收验证码）")),
+                );
+            }
+            return Ok(Some(true));
+        }
         Ok(None)
     }
 
@@ -560,9 +617,78 @@ impl GeneralList {
                     data.anys_gateway = text.trim_end_matches('/').to_string();
                     return Ok(true);
                 }
+            } else if id == "huamei_email" {
+                let email = text.trim().to_string();
+                if !email.contains('@') {
+                    show_error(anyhow::anyhow!("邮箱格式不对"));
+                    return Ok(false);
+                }
+                self.huamei_stage = HuameiStage::Sending;
+                self.huamei_task = Some(Task::new(crate::huamei::start_login(email)));
+                return Ok(true);
+            } else if id == "huamei_code" {
+                // 换出状态，避免在等网络时重复提交
+                let stage = std::mem::replace(&mut self.huamei_stage, HuameiStage::Verifying);
+                if let HuameiStage::WaitCode {
+                    verification_id,
+                    email,
+                    is_existing,
+                } = stage
+                {
+                    let code = text.trim().to_string();
+                    self.huamei_task = Some(Task::new(crate::huamei::finish_login(
+                        verification_id,
+                        code,
+                        email,
+                        is_existing,
+                    )));
+                } else {
+                    self.huamei_stage = HuameiStage::Idle;
+                }
+                return Ok(true);
             } else {
                 return_input(id, text);
             }
+        }
+        // ── 【huamei】登录流程推进 ──
+        if let Some(mut task) = self.huamei_task.take() {
+            if let Some(res) = task.take() {
+                self.huamei_stage = HuameiStage::Idle;
+                match res {
+                    Err(err) => show_error(err.context("huamei 登录失败")),
+                    Ok(crate::huamei::Step::OtpSent {
+                        verification_id,
+                        email,
+                        is_existing,
+                    }) => {
+                        self.huamei_stage = HuameiStage::WaitCode {
+                            verification_id,
+                            email,
+                            is_existing,
+                        };
+                        request_input(
+                            "huamei_code",
+                            InputBox::new()
+                                .title(Cow::Borrowed("huamei 账号"))
+                                .prompt(Cow::Borrowed("邮箱里收到的验证码")),
+                        );
+                        show_message("验证码已发送，请查看邮箱").ok();
+                    }
+                    Ok(crate::huamei::Step::LoggedIn { token, email }) => {
+                        let d = get_data_mut();
+                        d.huamei_token = Some(token);
+                        d.huamei_email = email.clone();
+                        save_data()?;
+                        show_message(format!(
+                            "已登录 huamei：{}",
+                            email.unwrap_or_else(|| "(未知邮箱)".into())
+                        ))
+                        .ok();
+                    }
+                }
+                return Ok(true);
+            }
+            self.huamei_task = Some(task);
         }
         if let Some(task) = &mut self.cache_task {
             if let Some(size) = task.take() {
@@ -648,6 +774,25 @@ impl GeneralList {
         item! {
             render_title(ui, tl!("item-anys-gateway"), Some(tl!("item-anys-gateway-sub")));
             self.anys_gateway_btn.render_text(ui, rr, t, &data.anys_gateway, 0.4, false);
+        }
+        // ── 【huamei】账号行 ──
+        // 标签在进 item! 之前算好（后面要可变借 self.huamei_btn，不能同时持有它的字段借用）
+        let huamei_label: String = if self.huamei_stage.busy() {
+            "…".into()
+        } else if matches!(self.huamei_stage, HuameiStage::WaitCode { .. }) {
+            "等待验证码…".into()
+        } else if let Some(email) = &data.huamei_email {
+            format!("{email} · 退出")
+        } else {
+            "登录".into()
+        };
+        item! {
+            render_title(
+                ui,
+                Cow::Borrowed("huamei 账号"),
+                Some(Cow::Borrowed("登录后每局成绩自动上传，用于分析你在这张谱上哪里失分")),
+            );
+            self.huamei_btn.render_text(ui, rr, t, &huamei_label, 0.4, false);
         }
         self.lang_btn.render_top(ui, t, 1.);
         (w, h)

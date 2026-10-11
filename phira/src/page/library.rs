@@ -269,7 +269,15 @@ impl LibraryPage {
             show_message(tl!("offline-mode")).error();
             return;
         }
-        if get_data().me.is_none() {
+        if get_data().me.is_none() && crate::huamei::current_token().is_none() {
+            // 【huamei 改动】上游要求**必须登 Phira 账号**才能看在线谱面
+            // （`me` 是 Phira 用户）。我们的取谱走服务端代理，
+            // `/chart` 列表**匿名就能读**（实测 9,722 张谱），
+            // 所以把守卫放宽成「有 huamei 账号即可」。
+            //
+            // ⚠ 只放宽这一处。`home.rs` 里那几处 `me.is_none()` 守的是
+            //   **玩家自己的成绩/资料**，那些确实需要 Phira 账号，
+            //   放宽了只会让请求白白失败。
             show_error(anyhow!(tl!("must-login")));
             return;
         }

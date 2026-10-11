@@ -224,6 +224,62 @@ pub fn current_token() -> Option<String> {
 }
 
 // ══════════════════════════════════════════════════════════════
+// 登录流程的状态机（由设置页驱动）
+// ══════════════════════════════════════════════════════════════
+
+/// 一次登录流程里，异步任务完成后交给界面的「下一步」。
+///
+/// ⚠ 刻意**不在这里存 token** —— 落盘要在同步上下文里做。
+///   在 async 块里拿 `get_data_mut()` 会得到一个跨 await 持有的
+///   `&'static mut Data`，那既不好过 Send 检查，也容易把借用拖得很长。
+///   所以任务只把结果**带回来**，由调用方写。
+#[derive(Debug)]
+pub enum Step {
+    /// 验证码已发出，等用户输入
+    OtpSent {
+        verification_id: String,
+        email: String,
+        is_existing: bool,
+    },
+    /// 登录成功
+    LoggedIn { token: String, email: Option<String> },
+}
+
+/// 发起第一步：发验证码。
+pub async fn start_login(email: String) -> Result<Step> {
+    let r = send_otp(&email).await?;
+    if r.verification_id.is_empty() {
+        bail!("服务端没有返回 verification_id");
+    }
+    Ok(Step::OtpSent {
+        verification_id: r.verification_id,
+        email,
+        is_existing: r.is_user,
+    })
+}
+
+/// 第二步：验证码换 token。
+///
+/// 新用户会走 `signup`，而它**要求密码**。客户端这里先不带密码
+/// （`password: None` → 空串）—— 空密码账号以后不能用密码登录，
+/// 但用验证码仍然能登，对我们是够的。
+pub async fn finish_login(
+    verification_id: String,
+    code: String,
+    email: String,
+    is_existing: bool,
+) -> Result<Step> {
+    let s = verify_otp(&verification_id, &code, &email, is_existing, None).await?;
+    if s.access_token.is_empty() {
+        bail!("服务端没有返回 access_token");
+    }
+    Ok(Step::LoggedIn {
+        token: s.access_token,
+        email: s.email.or(Some(email)),
+    })
+}
+
+// ══════════════════════════════════════════════════════════════
 // 成绩上报
 // ══════════════════════════════════════════════════════════════
 

@@ -196,7 +196,18 @@ def main():
     log("资源就绪。运行：")
     log("  cd %s" % ROOT)
     log("  ./target/release/phira-main.exe      # ⚠ 必须在项目根目录跑")
-    return 0 if not dirty else 0
+
+    # ── 顺带刷新「内嵌资源清单」──
+    # ⚠ 必须在这里做：`phira/src/assets_embedded.rs` 用的是 include_bytes!，
+    #   缺任何一个文件都会**编译不过**。而 font.ttf / background.jpg 是
+    #   上游 gitignore 的，新克隆的仓库里没有 —— 所以顺序只能是
+    #   「先 prepare-assets → 再 gen-embedded-assets → 最后 cargo build」。
+    gen = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gen-embedded-assets.py")
+    if os.path.exists(gen):
+        log("")
+        log("[embed] 刷新内嵌资源清单 …")
+        subprocess.run([sys.executable, gen], cwd=ROOT, check=False)
+    return 0
 
 
 if __name__ == "__main__":
