@@ -618,9 +618,13 @@ impl GeneralList {
                     return Ok(true);
                 }
             } else if id == "huamei_email" {
-                let email = text.trim().to_string();
-                if !email.contains('@') {
-                    show_error(anyhow::anyhow!("邮箱格式不对"));
+                // ① 先把全角折成半角 —— 输入法切到全角是真踩过的坑：
+                //    `ｐｙｚ…＠ｑｑ．ｃｏｍ` 看着和半角一模一样，正则却一律不认。
+                // ② 再按服务端的规则**本地**校验，这样能指出具体哪个字符不对，
+                //    而不是把服务端的 protobuf 报错原样糊出来。
+                let email = crate::huamei::normalize_email(&text);
+                if let Err(msg) = crate::huamei::validate_email(&email) {
+                    show_error(anyhow::anyhow!("{msg}"));
                     return Ok(false);
                 }
                 self.huamei_stage = HuameiStage::Sending;
@@ -661,6 +665,8 @@ impl GeneralList {
                         email,
                         is_existing,
                     }) => {
+                        // ⚠ 先把回显串取出来 —— 下面 `email` 会被移进 WaitCode
+                        let echo = email.clone();
                         self.huamei_stage = HuameiStage::WaitCode {
                             verification_id,
                             email,
@@ -672,7 +678,9 @@ impl GeneralList {
                                 .title(Cow::Borrowed("huamei 账号"))
                                 .prompt(Cow::Borrowed("邮箱里收到的验证码")),
                         );
-                        show_message("验证码已发送，请查看邮箱").ok();
+                        // ⚠ 这里把**实际发出去的串**回显出来 —— 全角形近字
+                        //   肉眼几乎分不出来，只有回显才能立刻发现。
+                        show_message(format!("验证码已发到 {echo}，请查看邮箱")).ok();
                     }
                     Ok(crate::huamei::Step::LoggedIn { token, email }) => {
                         let d = get_data_mut();

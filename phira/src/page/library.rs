@@ -14,7 +14,7 @@ use crate::{
     tabs::{Tabs, TitleFn},
     tags::TagsDialog,
 };
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result};
 use chrono::{DateTime, Utc};
 use inputbox::InputBox;
 #[cfg(target_os = "android")]
@@ -269,18 +269,20 @@ impl LibraryPage {
             show_message(tl!("offline-mode")).error();
             return;
         }
-        if get_data().me.is_none() && crate::huamei::current_token().is_none() {
-            // 【huamei 改动】上游要求**必须登 Phira 账号**才能看在线谱面
-            // （`me` 是 Phira 用户）。我们的取谱走服务端代理，
-            // `/chart` 列表**匿名就能读**（实测 9,722 张谱），
-            // 所以把守卫放宽成「有 huamei 账号即可」。
-            //
-            // ⚠ 只放宽这一处。`home.rs` 里那几处 `me.is_none()` 守的是
-            //   **玩家自己的成绩/资料**，那些确实需要 Phira 账号，
-            //   放宽了只会让请求白白失败。
-            show_error(anyhow!(tl!("must-login")));
-            return;
-        }
+        // ══════════════════════════════════════════════════════════════
+        // 【huamei 改动】上游这里要求「必须登录」—— 而 `me` 是 **Phira** 账号，
+        // 我们整条链路上根本没有 Phira 凭据（取谱走服务端代理）。
+        //
+        // **这道门直接去掉。** 理由：
+        //   · `/chart` 列表在 Phira 是**公开**的 —— 实测匿名可读，
+        //     一次拿回 9,722 张谱。上游拦的是"nudge 你登录"，不是权限。
+        //   · 我们的用户只该被要求一件事：登 huamei 账号来收成绩。
+        //     在"看谱"这一步再要一次 Phira 登录，是把两件事混在一起了。
+        //
+        // ⚠ 只去掉这一处。`home.rs` 里那几处 `me.is_none()` 守的是
+        //   **玩家自己的成绩 / 未读消息 / 活动页**，那些确实绑定 Phira 账号，
+        //   放宽了只会让请求白白失败（`/me/*` 会 401）。
+        // ══════════════════════════════════════════════════════════════
         if !check_read_tos_and_policy(false, false) {
             // Blocked on the TOS gate; retry automatically once accepted.
             self.online_pending_tos = true;

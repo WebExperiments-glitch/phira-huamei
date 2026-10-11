@@ -122,6 +122,28 @@ fn bare_client() -> reqwest::Client {
         .expect("reqwest client")
 }
 
+/// 把服务端的错误响应压成一句能看的话。
+///
+/// 云服务回的是 protobuf 风格的 JSON，例如
+/// ```json
+/// {"code":"INVALID_ARGUMENT","error":"invalid_argument","error_code":3,
+///  "error_description":"invalid SendVerificationCodeRequest.Email: ..."}
+/// ```
+/// 原样 `{:?}` 出去会在对话框里堆一大坨，用户只会记住"登录失败"。
+fn readable_error(text: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        for k in ["error_description", "message", "error"] {
+            if let Some(s) = v.get(k).and_then(|it| it.as_str()) {
+                let s = s.trim();
+                if !s.is_empty() {
+                    return s.chars().take(220).collect();
+                }
+            }
+        }
+    }
+    text.chars().take(220).collect()
+}
+
 async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
     url: &str,
     body: &T,
@@ -131,14 +153,13 @@ async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
     if let Some(t) = token {
         req = req.header(AUTHORIZATION, format!("Bearer {t}"));
     }
-    let resp = req.send().await.with_context(|| format!("POST {url} 失败"))?;
+    let resp = req.send().await.with_context(|| "网络请求失败（检查网络/代理）".to_string())?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        bail!("POST {url} → {status}: {}", text.chars().take(200).collect::<String>());
+        bail!("{}（HTTP {status}）", readable_error(&text));
     }
-    serde_json::from_str::<R>(&text)
-        .with_context(|| format!("POST {url} 返回的不是预期 JSON：{}", text.chars().take(200).collect::<String>()))
+    serde_json::from_str::<R>(&text).with_context(|| "服务端返回的不是预期 JSON".to_string())
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -245,6 +266,98 @@ pub enum Step {
     LoggedIn { token: String, email: Option<String> },
 }
 
+/// 【前置邮箱校验】—— 把服务端的校验规则**原样**搬到本地，提前拦下来。
+///
+/// 服务端（`.cloud/auth/v1/verification`）对一个不合法邮箱的回应是：
+/// ```
+/// {"code":"INVALID_ARGUMENT","error":"invalid_argument","error_code":3,
+///  "error_description":"invalid SendVerificationCodeRequest.Email: value does not
+///   match regex pattern \"^$|^[.0-9A-Za-z_-]{1,40}@[.0-9..."}
+/// ```
+/// 这段 protobuf 报文直接糊进对话框，用户只会看到"登录失败"。
+///
+/// 实测出来的规则（2026-10-11，逐个试过）：
+/// | 输入 | 结果 |
+/// |---|---|
+/// | `a@qq.com` | ✅ |
+/// | `a.b_c-d@qq.com` | ✅ |
+/// | `a+b@qq.com` | ❌ **不允许 `+`** —— 而这是最常见的别名写法 |
+/// | `测试@qq.com` | ❌ 不准中文 |
+/// | `a@qq` | ❌ 域名必须带点 |
+///
+/// ⚠ 这里**只用 ASCII 判断**，不引正则 —— 要的是能指出"哪个字符不对"的提示，
+///   而不是又一个"不匹配"。
+pub fn validate_email(email: &str) -> std::result::Result<(), String> {
+    let e = email.trim();
+    if e.is_empty() {
+        return Err("邮箱不能为空".into());
+    }
+    let Some((local, domain)) = e.split_once('@') else {
+        return Err(if e.contains('＠') {
+            "你把 @ 打成了全角「＠」—— 换成半角 @".into()
+        } else {
+            "要写成 name@example.com 这种形式".into()
+        });
+    };
+    if local.is_empty() || local.chars().count() > 40 {
+        return Err("@ 前面要是 1–40 个字符".into());
+    }
+    if let Some(c) = local
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+    {
+        return Err(format!(
+            "@ 前面不能有「{c}」—— 只允许英文、数字、点、下划线、减号。\
+             ⚠ 不支持加号别名（name+tag@…），请用主邮箱地址"
+        ));
+    }
+    if domain.is_empty() || !domain.contains('.') {
+        return Err("域名部分要带点，例如 qq.com".into());
+    }
+    if let Some(c) = domain
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-')))
+    {
+        return Err(format!("域名里不能有「{c}」"));
+    }
+    let tld = domain.rsplit('.').next().unwrap_or("");
+    if tld.len() < 2 || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Err("域名后缀要至少 2 个英文字母，例如 .com".into());
+    }
+    Ok(())
+}
+
+/// 把**全角字符**折成半角，并去掉零宽字符，再去掉首尾空白 —— 然后才是要发出去的串。
+///
+/// 【为什么必须做这一步】
+///   Phira 的输入框是自绘的，**不接管输入法的全角/半角状态**。
+///   中文用户按 Shift+空格 切到全角之后，打出来的会是一串全角形近字：
+///     期望 `pyzpansiyuan123456@qq.com`
+///     实际 `ｐｙｚｐａｎｓｉｙｕａｎ１２３４５６＠ｑｑ．ｃｏｍ`
+///   两者在字体里**看着几乎一样**，但正则一律不认，而服务端只会回一句
+///   `value does not match regex pattern` —— 完全看不出问题在哪。
+///
+///   这里顺手也把 U+3000（全角空格）和零宽字符（U+200B/200C/200D/FEFF）去掉，
+///   它们是复制粘贴时的常见污染。
+pub fn normalize_email(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !matches!(*c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
+        .map(|c| {
+            let u = c as u32;
+            if (0xFF01..=0xFF5E).contains(&u) {
+                // 全角 ASCII 区块 → 半角（＠→@，．→.，０→0，ａ→a …）
+                char::from_u32(u - 0xFEE0).unwrap_or(c)
+            } else if u == 0x3000 {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
 /// 发起第一步：发验证码。
 pub async fn start_login(email: String) -> Result<Step> {
     let r = send_otp(&email).await?;
@@ -323,4 +436,50 @@ pub async fn upload_play(payload_json: &[u8], chart_digest: Option<String>) -> R
         body.chart_notes
     );
     post_json::<_, UploadResp>(&format!("{}/play", hm_base()), &body, Some(&token)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 用户实测卡住的那一个：服务端接受了它，所以它必须通过本地校验。
+    #[test]
+    fn user_email_passes() {
+        assert!(validate_email("pyzpansiyuan123456@qq.com").is_ok());
+        assert!(validate_email("kanqiao86413@163.com").is_ok());
+        assert!(validate_email("a.b_c-d@qq.com").is_ok());
+    }
+
+    /// 实测被服务端拒绝的（见 validate_email 的表格）
+    #[test]
+    fn known_bad_emails_rejected() {
+        assert!(validate_email("a+b@qq.com").is_err(), "+ 别名服务端不收");
+        assert!(validate_email("测试@qq.com").is_err());
+        assert!(validate_email("a@qq").is_err());
+        assert!(validate_email("a b@qq.com").is_err());
+        assert!(validate_email("").is_err());
+        // 提示要指出具体是哪个字符
+        let e = validate_email("a+b@qq.com").unwrap_err();
+        assert!(e.contains('+'), "提示里要出现那个字符：{e}");
+    }
+
+    /// 全角折算 —— 输入法切全角是这个 bug 最可能的成因
+    #[test]
+    fn fullwidth_is_folded() {
+        let full = "ｐｙｚｐａｎｓｉｙｕａｎ１２３４５６＠ｑｑ．ｃｏｍ";
+        assert_eq!(normalize_email(full), "pyzpansiyuan123456@qq.com");
+        assert!(validate_email(&normalize_email(full)).is_ok());
+        // 全角空格 / 零宽字符也要清掉
+        assert_eq!(normalize_email("  a@qq.com\u{200B} "), "a@qq.com");
+        assert_eq!(normalize_email("a@qq.com\u{3000}"), "a@qq.com");
+        // 半角原样不动
+        assert_eq!(normalize_email("a@qq.com"), "a@qq.com");
+    }
+
+    #[test]
+    fn error_is_readable() {
+        let raw = r#"{"code":"INVALID_ARGUMENT","error":"invalid_argument","error_code":3,"error_description":"invalid X.Email: bad"}"#;
+        assert_eq!(readable_error(raw), "invalid X.Email: bad");
+        assert_eq!(readable_error("plain text"), "plain text");
+    }
 }
