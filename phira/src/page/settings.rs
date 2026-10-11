@@ -647,6 +647,9 @@ impl GeneralList {
                 } = stage
                 {
                     let code = text.trim().to_string();
+                    // 验证码也落盘 —— 输入框的两层污染（UTF-16 / 子进程噪声）
+                    // 对**每个**单行对话框都成立，不只邮箱。
+                    crate::huamei::log_login_debug("code", &text, &code);
                     self.huamei_task = Some(Task::new(crate::huamei::finish_login(
                         verification_id,
                         code,

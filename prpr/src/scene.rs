@@ -29,7 +29,10 @@ use std::{
     any::Any,
     borrow::Cow,
     cell::RefCell,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 use tracing::warn;
 
@@ -176,8 +179,17 @@ fn show_inputbox(config: InputBox, backend: &dyn Backend) {
     }
 }
 
+/// 【huamei 改动】最近一次 `request_input` 是不是**多行**模式。
+///
+/// 为什么要记这个：输入框回传的文本在 Windows 上会被**子进程自己的噪声**污染
+/// （见 `sanitize_dialog_text`）。单行模式下真值一定是**最后一行**，
+/// 所以可以放心只取最后一行；多行模式下用户的内容本身就有换行，
+/// 那样切会把用户输入切掉一大半 —— 必须区别对待。
+static INPUT_MULTILINE: AtomicBool = AtomicBool::new(false);
+
 #[inline]
 pub fn request_input(id: impl Into<String>, mut config: InputBox) {
+    INPUT_MULTILINE.store(config.mode == inputbox::InputMode::Multiline, Ordering::Relaxed);
     *INPUT_TEXT.lock().unwrap() = (Some(id.into()), None);
     *INPUT_CANCELLED.lock().unwrap() = None;
     if config.title.is_none() {
@@ -196,21 +208,23 @@ pub fn request_input(id: impl Into<String>, mut config: InputBox) {
 }
 
 pub fn take_input() -> Option<(String, String)> {
+    let multiline = INPUT_MULTILINE.load(Ordering::Relaxed);
     let mut w = INPUT_TEXT.lock().unwrap();
-    w.0.clone().zip(std::mem::take(&mut w.1).map(|it| sanitize_dialog_text(&it)))
+    w.0.clone()
+        .zip(std::mem::take(&mut w.1).map(|it| sanitize_dialog_text(&it, multiline)))
 }
 
-/// 【huamei 改动】修输入框在 Windows 上回传文本的**编码损坏**。
+/// 【huamei 改动】修输入框在 Windows 上回传文本的**两层损坏**。
 ///
 /// ══════════════════════════════════════════════════════════════
-/// 【2026-10-11 实测复现】
+/// 【第一层：UTF-16 被当成 UTF-8 读】（2026-10-11 实测）
 /// ══════════════════════════════════════════════════════════════
-/// Windows 上输入框是 `inputbox` crate 跑 PowerShell + WinForms 弹原生窗，
+/// Windows 上输入框是 `inputbox` crate 跑系统脚本宿主 + WinForms 弹原生窗，
 /// 而 Rust 侧取的是 **`output.stdout` 的全部内容**当返回值：
 /// ```ignore
 /// Some(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
 /// ```
-/// 实测 PowerShell **按 UTF-16 LE（带 BOM）写出**，原始字节是：
+/// 实测宿主**按 UTF-16 LE（带 BOM）写出**，原始字节是：
 /// ```text
 /// ff fe | 70 00 79 00 72 00 | 0d 00 0a 00
 ///  BOM  |  p \0  y \0  r \0 |  \r \0 \n \0
@@ -218,30 +232,40 @@ pub fn take_input() -> Option<(String, String)> {
 /// 按 UTF-8 读就变成 `\u{FFFD}\u{FFFD}p\0y\0r\0…`
 /// —— **每个字符后面多一个 NUL，长度接近翻倍**，屏幕上完全看不出来。
 ///
-/// 用户报的「@ 前面有 59 个字符」，可他明明只输了 18 个 —— 就是这么来的。
+/// ══════════════════════════════════════════════════════════════
+/// 【第二层：子进程自己的告警粘在文本前面】
+/// ══════════════════════════════════════════════════════════════
+/// 实测 `data/huamei-login.log` 抓到：
+/// ```text
+/// raw = "[WARNING] Ignore caches that are heterogeneous\r\npyzpansiyuan123456@qq.com"
+/// ```
+/// 子进程在初始化 WinForms/GDI+ 时把自己显卡/字体缓存的告警也写进了 stdout。
+/// 18 个字符的邮箱加上这行 48 字符的告警，就是用户看到的「59 个字符」。
 ///
-/// 【为什么放在这里而不是各个调用点】
-///   `take_input()` 是**所有**文本输入的唯一出口（设置页、谱名编辑、
-///   搜索、房间地址…），每一条都会中同样的招。在这里洗一次，全站生效。
+/// 【修法】
+///   1. 删 `\0` / `U+FFFD`（第一层）
+///   2. **单行模式**下只取**最后一行**（第二层）—— 脚本是最后才写文本框内容的，
+///      真值在末尾；噪声都是整行的，按换行切就够。
+///      ⚠ 多行模式**不能**切，用户的内容本身就有换行。
 ///
-/// ⚠ 只清 **`\0` 和 `U+FFFD`** 这两样。
-///   它们是 UTF-16 损坏的产物，用户**打不出来**，删掉只有好处。
-///   空白**不在这里动** —— 搜索词、谱名里的空格是合法的，
-///   要删空白的场合（邮箱）自己去做（见 `phira::huamei::normalize_email`）。
-///
-/// ⚠ 但**尾随的 `\r\n` 要删**：PowerShell 在文本后面追加了它自己的换行，
-///   UTF-16 下是 `0d 00 0a 00` → 解码成 `\r \0 \n \0`。
-///   crate 那边本来用 `trim_end()` 想删掉它，可**末尾是 `\0` 不是空白**，
-///   所以它一个字符都没删掉 —— 得我们在去掉 `\0` 之后再收尾。
-///   （只删 `\r` `\n`，不删空格，免得误伤用户真的想留的空格。)
-pub fn sanitize_dialog_text(s: &str) -> String {
-    if !s.contains(['\0', '\u{FFFD}']) {
-        return s.to_owned();
+/// ⚠ 空白**不在这里动** —— 搜索词、谱名里的空格是合法的。
+///   要删空白的场合自己去做（邮箱 → `phira::huamei::normalize_email`）。
+pub fn sanitize_dialog_text(s: &str, multiline: bool) -> String {
+    let cleaned: String = if s.contains(['\0', '\u{FFFD}']) {
+        s.chars().filter(|c| !matches!(*c, '\0' | '\u{FFFD}')).collect()
+    } else {
+        s.to_owned()
+    };
+    if multiline {
+        return cleaned.trim_end_matches(['\r', '\n']).to_owned();
     }
-    s.chars()
-        .filter(|c| !matches!(*c, '\0' | '\u{FFFD}'))
-        .collect::<String>()
-        .trim_end_matches(['\r', '\n'])
+    // 单行：取最后一段非空内容。`str::lines()` 会把 `\r\n` 的 `\r` 也吃掉。
+    cleaned
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
         .to_owned()
 }
 
@@ -635,8 +659,7 @@ pub type LocalSceneTask = LocalTask<Result<NextScene>>;
 mod sanitize_tests {
     use super::sanitize_dialog_text;
 
-    /// 逐字节复现：BOM(ff fe) 按 UTF-8 lossy 读 → 两个 U+FFFD；
-    /// 随后每个 ASCII 字符后面跟一个 NUL（UTF-16LE 的高位字节）。
+    /// 单行：逐字节复现 UTF-16 污染（BOM → 两个 U+FFFD；每个 ASCII 后跟一个 NUL）
     #[test]
     fn repairs_utf16_read_as_utf8() {
         let mut polluted = String::from("\u{FFFD}\u{FFFD}");
@@ -645,25 +668,39 @@ mod sanitize_tests {
             polluted.push('\0');
         }
         polluted.push_str("\r\0\n\0");
-        assert_eq!(sanitize_dialog_text(&polluted), "pyrpansiyuan123456@qq.com");
+        assert_eq!(sanitize_dialog_text(&polluted, false), "pyrpansiyuan123456@qq.com");
     }
 
-    /// ⚠ **空白绝不能被这里删掉** —— 搜索词、谱名里的空格是合法的。
-    /// （要删空白的场合自己去做：`phira::huamei::normalize_email`。）
+    /// 单行：**子进程噪声粘在前面**。用 `data/huamei-login.log` 里的真实数据做用例。
     #[test]
-    fn keeps_spaces() {
-        assert_eq!(sanitize_dialog_text("hello world"), "hello world");
-        assert_eq!(sanitize_dialog_text("  前后有空格  "), "  前后有空格  ");
-        assert_eq!(sanitize_dialog_text("a\0b c"), "ab c");
-        // ⚠ 尾随 CRLF（PowerShell 追加的）要删掉，但不能删空格
-        assert_eq!(sanitize_dialog_text("a\0b\r\0\n\0"), "ab");
-        assert_eq!(sanitize_dialog_text("hello \0world"), "hello world");
+    fn drops_process_noise_before_value() {
+        let raw = "[WARNING] Ignore caches that are heterogeneous\r\npyzpansiyuan123456@qq.com";
+        assert_eq!(sanitize_dialog_text(raw, false), "pyzpansiyuan123456@qq.com");
+
+        // 多行噪声 + 空行
+        let raw2 = "line one\nline two\n\n  123456  \n";
+        assert_eq!(sanitize_dialog_text(raw2, false), "123456");
+
+        // 干净的单行输入原样通过
+        assert_eq!(sanitize_dialog_text("123456", false), "123456");
+        assert_eq!(sanitize_dialog_text("hello world", false), "hello world");
     }
 
-    /// 没污染时要原样返回（也顺带保证不会误伤）
+    /// ⚠ 多行模式**绝不能**切行 —— 用户的内容本身就有换行
+    #[test]
+    fn multiline_is_never_split() {
+        let user = "第一行\n第二行\n第三行";
+        assert_eq!(sanitize_dialog_text(user, true), "第一行\n第二行\n第三行");
+        // 只收尾（PowerShell 追加的换行），不动中间
+        assert_eq!(sanitize_dialog_text("a\r\nb\r\n", true), "a\r\nb");
+        // 多行里的 NUL 污染照样清
+        assert_eq!(sanitize_dialog_text("a\0b\nc\0d", true), "ab\ncd");
+    }
+
+    /// 干净串要原样返回（别误伤）
     #[test]
     fn passthrough_when_clean() {
-        assert_eq!(sanitize_dialog_text(""), "");
-        assert_eq!(sanitize_dialog_text("正常中文 English 123"), "正常中文 English 123");
+        assert_eq!(sanitize_dialog_text("", false), "");
+        assert_eq!(sanitize_dialog_text("正常中文 English 123", false), "正常中文 English 123");
     }
 }
