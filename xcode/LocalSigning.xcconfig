@@ -1,0 +1,21 @@
+/* 本地签名配置 —— 上游 phira 把本文件 gitignore 了（里面放开发者自己的 Team ID）。
+ *
+ * 我们**刻意提交一个空版本**：目标不是上 App Store，而是产出一个**无签名 IPA**
+ * 给 Sideloadly 用。所以：
+ *
+ *   LOCAL_DEVELOPMENT_TEAM             留空 → xcodebuild 用 CODE_SIGNING_ALLOWED=NO 构建
+ *   LOCAL_CODE_SIGN_STYLE              Manual（留空也行，显式写出来少一次警告）
+ *   LOCAL_CODE_SIGN_IDENTITY           留空 → 不签
+ *   LOCAL_PROVISIONING_PROFILE_SPECIFIER 留空 → 不需要描述文件
+ *
+ * ⚠ 这不是"绕过得不好"，而是侧载的标准姿势：IPA 无签名，签名的动作由
+ *   Sideloadly 用**用户自己的 Apple ID** 在 PC 上完成（7 天有效）。
+ *   我们这边不碰任何证书，也就不存在证书泄漏的问题。
+ *
+ * ⚠ 如果你要真机调试 / 上架，把 Team ID 填进来即可，但**别提交** ——
+ *   改完记得确认 `git check-ignore xcode/LocalSigning.xcconfig` 是空的。 */
+
+LOCAL_DEVELOPMENT_TEAM =
+LOCAL_CODE_SIGN_STYLE = Manual
+LOCAL_CODE_SIGN_IDENTITY =
+LOCAL_PROVISIONING_PROFILE_SPECIFIER =

@@ -1,0 +1,202 @@
+# ============================================================
+#  iOS 无签名 IPA 构建
+# ============================================================
+#  【为什么需要它】
+#  phira 的 iOS app 外壳（phira.app/Info.plist）在上游是被 gitignore 的，
+#  所以任何人都 clone 不出 IPA。我们把外壳补进仓库，再用 macOS runner
+#  把它建成一个**无签名** IPA —— 签名那一步由 Sideloadly 用用户自己的
+#  Apple ID 在 PC 上完成。我们这边不碰任何证书。
+#
+#  【触发】
+#  · workflow_dispatch —— 手动点（平时改代码就用这个试）
+#  · push tag v*      —— 发版时自动出包，并挂到 GitHub Release 上
+#
+#  【产物】
+#  Phira-huamei-unsigned.ipa（Payload/Phira.app 打包，无签名）
+#  另外附带一个 build-report.txt，记着构建设置与校验结果 ——
+#  IPA 装不上时，先看这个文件，比翻几分钟日志快。
+# ============================================================
+name: iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+concurrency:
+  # 同一轮推送重复触发时，取消旧的，别让两个 xcodebuild 抢磁盘
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    # 第 7 步要把 IPA 挂到 Release 上，必须显式给写权限
+    # （默认的 GITHUB_TOKEN 是只读的，不写这句会 403）
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 0. 前置校验：缺一个内嵌资源就编译不过，而且报错极难懂 ──
+      #    "error: couldn't read ../../assets/font.ttf: No such file or directory"
+      #    在 CI 日志里出现时，人已经在 cargo 输出里翻半天了。先挡一道。
+      - name: 校验内嵌资源
+        run: python3 huamei-tools/check-embedded-assets.py
+
+      # ── 1. Rust 工具链 ──
+      #    rust-toolchain.toml 固定 nightly-2026-01-01 且要求
+      #    clippy / rustfmt / rust-analyzer 三个组件。这里按它要求的装齐，
+      #    否则第一次 cargo 调用时 rustup 才去补装，日志里表现为莫名其妙的卡住。
+      - name: 安装 Rust 工具链与 iOS target
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-01-01 --profile minimal \
+            --component clippy,rustfmt,rust-analyzer -y
+          rustup target add aarch64-apple-ios --toolchain nightly-2026-01-01
+          rustc --version
+          echo "---- 已装的 apple target ----"
+          ls ~/.rustup/toolchains/*/lib/rustlib/ | grep -i apple || true
+
+      # ── 2. 本地签名配置（空 = 不签名）──
+      #    仓库里已经提交了空版本，这里再写一遍是防御性的：
+      #    万一有人本地填了 Team ID 又提交进来，CI 仍然产出无签名包。
+      - name: 写入空签名配置
+        run: |
+          set -euo pipefail
+          mkdir -p xcode
+          cat > xcode/LocalSigning.xcconfig <<'XC'
+          LOCAL_DEVELOPMENT_TEAM =
+          LOCAL_CODE_SIGN_STYLE = Manual
+          LOCAL_CODE_SIGN_IDENTITY =
+          LOCAL_PROVISIONING_PROFILE_SPECIFIER =
+          XC
+          echo "---- LocalSigning.xcconfig ----"
+          cat xcode/LocalSigning.xcconfig
+
+      # ── 3. 构建 ──
+      #    -target 而不是 -scheme：上游没提交 xcschemes，用 scheme 会
+      #    "xcodebuild: error: The project ... does not contain a scheme"。
+      #    CODE_SIGNING_ALLOWED=NO + 空 identity/team → 无签名。
+      - name: xcodebuild（无签名）
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project phira.xcodeproj \
+            -target phira \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+            build 2>&1 | tee build-xcodebuild.log
+
+      # ── 4. 找到 .app，把可执行文件摆正 ──
+      #    pbxproj 的 CopyFiles 阶段（dstSubfolderSpec=6）把 phira-main
+      #    拷进 bundle，但具体落在哪一层在不同 Xcode 版本上有歧义。
+      #    不猜：无论它在哪，都在 bundle 根目录放一份，并显式声明
+      #    CFBundleExecutable。顺带删掉子目录里的重复副本（省 30MB）。
+      - name: 归置 app bundle
+        run: |
+          set -euo pipefail
+          APP="$(find build -maxdepth 3 -name 'Phira.app' -type d | head -1)"
+          if [ -z "$APP" ]; then
+            echo "::error::找不到 Phira.app —— xcodebuild 没成功"
+            exit 1
+          fi
+          echo "APP=$APP"
+          echo "---- bundle 内容 ----"
+          find "$APP" -maxdepth 2 | head -40
+
+          if [ ! -f build/phira-main ]; then
+            echo "::error::Cargo 阶段没产出 build/phira-main"
+            exit 1
+          fi
+          cp -f build/phira-main "$APP/phira-main"
+          chmod +x "$APP/phira-main"
+
+          # 子目录里的重复副本删掉（根目录那份才是 CFBundleExecutable）
+          find "$APP" -mindepth 2 -name phira-main -type f -delete 2>/dev/null || true
+
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleExecutable phira-main" "$APP/Info.plist" \
+            || /usr/libexec/PlistBuddy \
+            -c "Add :CFBundleExecutable string phira-main" "$APP/Info.plist"
+
+          echo "---- CFBundleExecutable ----"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist"
+          echo "---- 二进制架构 ----"
+          lipo -info "$APP/phira-main"
+
+      # ── 5. 打成无签名 IPA ──
+      #    IPA 就是一个 zip，顶层必须有 Payload/。
+      - name: 打包 IPA
+        run: |
+          set -euo pipefail
+          APP="$(find build -maxdepth 3 -name 'Phira.app' -type d | head -1)"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          rm -f Phira-huamei-unsigned.ipa
+          zip -qry Phira-huamei-unsigned.ipa Payload
+          ls -lh Phira-huamei-unsigned.ipa
+          echo "---- IPA 内容（前 30 项）----"
+          unzip -l Phira-huamei-unsigned.ipa | head -30
+
+      # ── 6. 自检报告 ──
+      #    装不上时先看这个，比翻几分钟构建日志快。
+      - name: 生成构建报告
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "=== 构建报告 $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+            echo "commit : ${{ github.sha }}"
+            echo "runner : $(sw_vers -productVersion) / Xcode $(xcodebuild -version | head -1)"
+            echo "rustc  : $(rustc --version 2>/dev/null || echo '未取到')"
+            echo
+            APP="$(find build -maxdepth 3 -name 'Phira.app' -type d 2>/dev/null | head -1)"
+            if [ -n "$APP" ]; then
+              echo "=== Info.plist 关键项 ==="
+              for k in CFBundleExecutable CFBundleIdentifier CFBundleShortVersionString MinimumOSVersion UILaunchStoryboardName; do
+                printf '  %-30s %s\n' "$k" "$(/usr/libexec/PlistBuddy -c "Print :$k" "$APP/Info.plist" 2>/dev/null || echo '(缺)')"
+              done
+              echo
+              echo "=== 可执行文件 ==="
+              lipo -info "$APP/phira-main" 2>/dev/null || echo '  (取不到)'
+              echo "  大小: $(du -h "$APP/phira-main" 2>/dev/null | cut -f1)"
+              echo
+              echo "=== bundle 里的 assets（应有 77 个内嵌资源）==="
+              find "$APP/assets" -type f 2>/dev/null | wc -l
+            else
+              echo "!! 没找到 Phira.app —— xcodebuild 失败，往下看日志"
+            fi
+            echo
+            echo "=== xcodebuild 日志尾部 ==="
+            tail -40 build-xcodebuild.log 2>/dev/null || echo '(无日志)'
+          } | tee build-report.txt
+
+      - name: 上传 IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Phira-huamei-unsigned-ipa
+          path: |
+            Phira-huamei-unsigned.ipa
+            build-report.txt
+          retention-days: 30
+          if-no-files-found: error
+
+      # ── 7. 发版时挂到 Release 上 ──
+      - name: 附到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Phira-huamei-unsigned.ipa
+            build-report.txt
+          fail_on_unmatched_files: true

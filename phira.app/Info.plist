@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- ══════════════════════════════════════════════════════════════
+	     为什么这个文件要自己写
+	     ══════════════════════════════════════════════════════════════
+	     上游 phira 把 /phira.app/ 整个 gitignore 掉了，所以公开仓库里**没有**
+	     iOS app 的外壳 —— 只有 phira.xcodeproj 指向它。直接 clone 下来是建不出
+	     IPA 的。这份 Info.plist 就是被忽略掉的那一块，由我们补上。
+
+	     【CFBundleExecutable 为什么是 phira-main】
+	     miniquad 的 iOS 后端（src/native/ios.rs）自己在 Rust 里调
+	     `UIApplicationMain(argc, argv, nil, NSAppDelegate)`，
+	     其中 NSAppDelegate 这个 ObjC 类也是 Rust 用 objc runtime 现场注册的。
+	     所以**整个 app 的入口就是那个 Rust 二进制本身**，不需要任何
+	     Swift/ObjC 源文件（pbxproj 的 Sources 阶段确实是空的）。
+	     Cargo 构建阶段把 phira-main 拷进 bundle，这里声明它是可执行文件。
+	     ══════════════════════════════════════════════════════════════ -->
+
+	<key>CFBundleExecutable</key>
+	<string>phira-main</string>
+
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+
+	<key>CFBundleName</key>
+	<string>Phira</string>
+
+	<key>CFBundleDisplayName</key>
+	<string>Phira</string>
+
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+
+	<key>CFBundleVersion</key>
+	<string>1</string>
+
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+
+	<!-- 与 phira.xcodeproj 里的 IPHONEOS_DEPLOYMENT_TARGET = 12.0 一致 -->
+	<key>MinimumOSVersion</key>
+	<string>12.0</string>
+
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+
+	<!-- 图标走 xcode/Assets.xcassets（pbxproj 里 ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon） -->
+	<key>CFBundleIcons</key>
+	<dict/>
+	<key>CFBundleIcons~ipad</key>
+	<dict/>
+
+	<!-- 启动图：xcode/LaunchScreen.storyboard 已被 Resources 阶段收进 bundle -->
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+
+	<!-- 音游要横屏，但菜单是竖排的 —— 四个方向全给，让界面自己决定 -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+
+	<key>UIRequiresFullScreen</key>
+	<true/>
+
+	<!-- 全屏游戏：不要状态栏，也不要 Safe Area 内边距 -->
+	<key>UIStatusBarHidden</key>
+	<true/>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+
+	<!-- 渲染走 GLKit / OpenGLES（见 miniquad src/native/ios.rs），
+	     所以设备能力只要求 arm64 + OpenGLES 2/3 -->
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+		<string>opengles-2</string>
+	</array>
+
+	<!-- 我们的接口全是 https（phm.app.workbuddy.host / api.phira.cn），
+	     ATS 保持默认（不允许任意加载）即可，不需要放开。
+	     ⚠ 别加 UIBackgroundModes/audio：那是"后台还能出声"，跟静音开关无关，
+	     对侧载包没有好处，只会让声明和实际行为不符。 -->
+</dict>
+</plist>

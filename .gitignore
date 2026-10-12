@@ -1,12 +1,17 @@
 inner.rs
 
 /target
-/assets/font.ttf
 /cache
 /data
 /.cargo
 /config.txt
-/assets/background.jpg
+# ⚠⚠ /assets/font.ttf 与 /assets/background.jpg **不能再排除**（2026-10-12）。
+# 上游 phira 把它们写进 .gitignore，是因为上游**运行时从 assets/ 目录读**。
+# 我们这个分支为了「单文件 exe 可直接运行」改成了 `include_bytes!` 内嵌
+# （见 phira/src/assets_embedded.rs），于是它们从「可选运行时资源」变成
+# 「编译期硬依赖」—— 照抄上游的排除规则会让新克隆和 CI 直接编译失败：
+#     error: couldn't read ../../assets/font.ttf: No such file or directory
+# 守着这件事的是 `huamei-tools/check-embedded-assets.py`。
 /assets/res
 /monitor-config.yml
 /.vscode
@@ -22,9 +27,15 @@ inner.rs
 /build_ios.sh
 /build
 /*.ipa
-/phira.app
+# ⚠ /phira.app 不再排除（2026-10-12）：这里面放的是 Info.plist —— iOS app 的
+# 外壳，缺了它 clone 下来根本建不出 IPA。构建产物是 build/Release-iphoneos/Phira.app，
+# 由上面的 /build 挡住，不会混进来。
 /phira.xcodeproj/project.xcworkspace/xcuserdata/
-/xcode/LocalSigning.xcconfig
+# ⚠ xcode/LocalSigning.xcconfig 与 phira.app/Info.plist **不再排除**（2026-10-12）。
+# 上游把它们 ignore 掉，是因为里面放开发者自己的 Team ID。我们的目标是产出
+# **无签名 IPA** 给 Sideloadly 侧载，所以提交的是"全空"版本 ——
+# 没有秘密，却让仓库能独立建出 IPA（否则 clone 下来连 app 外壳都没有）。
+# 真机调试/上架时把 Team ID 填进来，然后**重新加回忽略**。
 /dist
 /project.yml
 /prpr.scent

@@ -88,6 +88,14 @@ pub struct UploadResp {
     pub error: Option<String>,
     #[serde(default)]
     pub play_id: Option<i64>,
+    /// 服务端重算 score/accuracy 后的**一致性告警**（非空表示有差异）。
+    ///
+    /// ⚠ 这不是错误 —— 成绩**已经落库**了。服务端刻意不为它拒收，
+    ///   因为「算出来不等」未必是造假（也可能我们对计分的理解有偏差），
+    ///   而拒收真实成绩比放行可疑数据糟得多。见契约 §8。
+    ///   留在这里是为了把差异带进 `data/huamei-login.log`，好定位。
+    #[serde(default)]
+    pub warn: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -194,7 +202,12 @@ async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
        没有「哪一步、什么响应体」的记录就无从定位。
        所以：成功记状态码，失败连响应体一起记。 */
     if status.is_success() {
-        log_debug_line(&format!("[step] {step} → HTTP {status} ok"));
+        /* 成功也带上响应体（截断）—— 「上报成功但没落库」这类问题只能靠它定位，
+           例如响应里的 `play_id` / `verified` / `warn` 都在这儿。 */
+        log_debug_line(&format!(
+            "[step] {step} → HTTP {status} ok body={}",
+            text.chars().take(200).collect::<String>()
+        ));
     } else {
         log_debug_line(&format!(
             "[step] {step} → HTTP {status} FAIL body={}",
@@ -625,7 +638,16 @@ pub async fn upload_play(payload_json: &[u8], chart_digest: Option<String>) -> R
         body.score,
         body.chart_notes
     );
-    post_json::<_, UploadResp>("上报成绩", &format!("{}/play", hm_base()), &body, Some(&token)).await
+    post_json::<_, UploadResp>("上报成绩", &format!("{}/play", hm_base()), &body, Some(&token))
+        .await
+        .map(|r| {
+            /* 有差异就落盘 —— 这是**唯一**能看到服务端复算结果的窗口。
+               正常情况（客户端与服务端同一套公式）这里永远为空。 */
+            if !r.warn.is_empty() {
+                log_debug_line(&format!("[warn] 上报成绩 服务端一致性告警：{}", r.warn.join(" | ")));
+            }
+            r
+        })
 }
 
 #[cfg(test)]
