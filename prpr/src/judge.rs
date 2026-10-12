@@ -235,7 +235,26 @@ impl JudgeInner {
     }
 
     pub fn result(&self) -> PlayResult {
-        let early = self.diffs.iter().filter(|it| **it < 0.).count() as u32;
+        /* ⚠⚠ 这里原来写的是 `std: 0.` —— 于是结算界面上那个「ERROR ±Nms」
+           **永远显示 ±0**。它不是"这一局很准"，是压根没算。
+           现在真算出来：`diffs` 的**总体**标准差（不是样本标准差 ——
+           这是这一局的全部数据，没有"用样本估计总体"的意思）。
+
+           ⚠ 口径要说清楚，别让读的人误解：`diffs` 目前**只收 Good 判定**
+             （见 `commit()` 里那句 `if matches!(what, Judgement::Good)`），
+             所以这个数是「你那些差点没 Perfect 的音符偏了多少」，
+             **不是全谱偏差**。改成全谱口径要先让 `commit()` 收下所有判定 ——
+             那会改变上报数据的含义（`early`/`late`/`std` 都是从这里来的），
+             得先想清楚再动，不能顺手改。 */
+        let timed: Vec<f64> = self.diffs.iter().copied().filter(|d| *d != 0.).collect();
+        let n = timed.len();
+        let std = if n < 2 {
+            0.
+        } else {
+            let mean = timed.iter().sum::<f64>() / n as f64;
+            (timed.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / n as f64).sqrt() as f32
+        };
+        let early = timed.iter().filter(|d| **d < 0.).count() as u32;
         PlayResult {
             score: self.score(),
             accuracy: self.accuracy(),
@@ -243,8 +262,11 @@ impl JudgeInner {
             num_of_notes: self.num_of_notes,
             counts: self.counts,
             early,
-            late: self.diffs.len() as u32 - early,
-            std: 0.,
+            /* ⚠ 原来写的是 `diffs.len() - early`，那会把 diff == 0 的
+               （Drag/Flick 的硬编码 0）算成"晚"。这里按 timed 取，
+               零偏移的既不算早也不算晚。 */
+            late: n as u32 - early,
+            std,
             early_kind: self.early_kind,
             late_kind: self.late_kind,
         }

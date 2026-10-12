@@ -105,38 +105,25 @@ impl MainScene {
     pub async fn new(fallback: FontArc) -> Result<Self> {
         Self::init().await?;
 
-        /* ── 大厅 BGM ──
-           ⚠ 上游这里是一对 `cfg(closed)` 分叉：闭源构建从加密资源
-             `res/bgm` 读（`load_res` 内部过 `inner::resolve_data` 解密），
-             开源构建直接 `let bgm = None` —— **这就是「大厅没音乐」的原因**，
-             它不是 bug，是上游刻意把有版权的曲子从开源版里摘掉了。
+        /* ── 大厅 BGM：**刻意不做**（2026-10-12 用户明确要求）──
+           ⚠ 顺带记下根因，免得下次又当成 bug 去查：
+             上游这里是 `#[cfg(closed)]` 分叉 —— 闭源构建从加密资源 `res/bgm` 读
+             （`load_res` 内部过 `inner::resolve_data` 解密），开源构建直接
+             `bgm = None`。所以「开源版大厅没音乐」**不是坏了**，
+             是上游把有版权的曲子摘掉了。
 
-           我们放自己的曲子：`assets/lobby-bgm.ogg`，走**内嵌资源**
-           （和贴图/字体同一条路，见 assets_embedded.rs），不碰那套加密体系。
-           曲子由 `huamei-tools/gen-lobby-bgm.py` 程序生成，无第三方版权。
-
-           ⚠ `loop_mix_time` 给 0：那条 32 秒的循环是**精确无缝**的
-             （每个分音的频率都量化到 1/T 的整数倍，首尾天然接上），
-             再加交叉淡化反而会在循环点压出一个凹坑。
-             换曲子的话这里要重新判断 —— 有缝就给个 0.05~0.2。 */
-        let bgm = {
-            let bytes = load_file("lobby-bgm.ogg")
-                .await
-                .context("读不到大厅 BGM（assets/lobby-bgm.ogg）")?;
-            let bgm_clip = AudioClip::new(bytes)
-                .map_err(|e| anyhow!("大厅 BGM 解码失败：{e}"))?;
-            Some(UI_AUDIO.with(|it| {
-                it.borrow_mut().create_music(
-                    bgm_clip,
-                    sasa::MusicParams {
-                        amplifier: get_data().config.volume_bgm,
-                        loop_mix_time: 0.,
-                        command_buffer_size: 64,
-                        ..Default::default()
-                    },
-                )
-            })?)
-        };
+           要加回来的话，别走 `res/` 那套加密体系，用内嵌资源：
+             ① 把曲子放 `assets/<名字>.ogg`
+             ② 跑 `python huamei-tools/gen-embedded-assets.py`（会自动收进去）
+             ③ 把下面的 `None` 换成：
+                  let bytes = load_file("<名字>.ogg").await?;
+                  Some(UI_AUDIO.with(|it| it.borrow_mut().create_music(
+                      AudioClip::new(bytes)?,
+                      sasa::MusicParams { amplifier: get_data().config.volume_bgm,
+                                          loop_mix_time: 0., ..Default::default() }))?)
+             ⚠ `loop_mix_time`：精确无缝的循环给 0；有缝的曲子给 0.05~0.2 遮一下。
+               给 0 而曲子有缝 = 每次循环都咔哒一声。 */
+        let bgm = None;
 
         let mut sf = Self::new_inner(bgm, fallback).await?;
         sf.pages.push(Box::new(HomePage::new(Arc::clone(&sf.icons)).await?));

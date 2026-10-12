@@ -42,7 +42,6 @@ pub static ASSETS: &[(&str, &[u8])] = &[
     ("info.png", include_bytes!("../../assets/info.png")),
     ("language.png", include_bytes!("../../assets/language.png")),
     ("leaderboard.png", include_bytes!("../../assets/leaderboard.png")),
-    ("lobby-bgm.ogg", include_bytes!("../../assets/lobby-bgm.ogg")),
     ("medal.png", include_bytes!("../../assets/medal.png")),
     ("menu.png", include_bytes!("../../assets/menu.png")),
     ("message.png", include_bytes!("../../assets/message.png")),

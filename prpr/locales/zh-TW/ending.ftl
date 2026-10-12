@@ -16,3 +16,8 @@ upload-cancel = 取消上傳
 upload-retry = 重試
 
 still-uploading = 仍在上傳成績，請稍候…
+
+# 【huamei】結算畫面新增的失分行
+lost = 失分
+lost-judge = 判定
+lost-combo = 斷連

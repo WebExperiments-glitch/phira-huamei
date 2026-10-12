@@ -26,6 +26,23 @@ pub struct RecordUpdateState {
     pub new_rks: Option<f32>,
 }
 
+/// 千分位分组，给「失分 352,138」这类数字用。
+///
+/// 手写而不是引 crate：整个项目零额外的格式化依赖，为一行数字引一个包不值得。
+/// 只处理非负数 —— 这里用到的都是计数/分数，不会有负的。
+fn thousands(n: u32) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        // 从右往左每 3 位插一个逗号：剩余位数是 3 的倍数时（且不是第一位）插
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 pub struct EndingScene {
     background: SafeTexture,
     illustration: SafeTexture,
@@ -396,6 +413,117 @@ impl Scene for EndingScene {
                     .color(ct)
                     .draw_using(&BOLD_FONT);
             }
+
+            /* ══════════════════════════════════════════════════════════
+               【huamei 新增】这一局到底丢在哪儿
+
+               光看 ACC 只知道"打得不太行"，看不出**为什么**。下面两行回答它：
+
+               ① 早/晚偏差条 —— 你是抢拍还是拖拍。
+                  ACC 一样高的两个人，一个偏早一个偏晚，改法完全相反。
+                  ⚠ 只统计 Perfect / Good / Bad（`[0..3]`），**排除 Miss**：
+                    Miss 在上游带着 0.25 这个占位值，算进来会让"晚"凭空多一截。
+                  ⚠ 这个指标是从真实对局里读出来的：那局 Perfect 几乎正中（+0.8ms），
+                    但 Good 全早（−96ms）、Bad 全早（−175ms）—— 典型的抢拍，
+                    而这件事在 ACC 上完全看不出来。
+
+               ② 失分构成 —— 分数是怎么没的。
+                  计分公式（prpr/src/judge.rs 的 score()）：
+                      得分 = 0.9 × 判定率 + 0.1 × 连击率
+                  所以 100 万满分可以精确拆成两笔损失，**加起来一定等于总分差**
+                  （不是估算，是恒等式）：
+                      判定失分 = 0.9 × (1 − ACC) × 100万
+                      断连失分 = 总分差 − 判定失分
+                  这一行直接告诉你「练准度」还是「别断连」哪个更划算。
+               ══════════════════════════════════════════════════════════ */
+            let ry = r.y + r.h + 0.05;
+            let early: u32 = res.early_kind[0..3].iter().sum();
+            let late: u32 = res.late_kind[0..3].iter().sum();
+            let total_timed = early + late;
+            if total_timed > 0 {
+                let s2 = 0.42;
+                let lr = ui
+                    .text("早")
+                    .pos(lf - 0.017, ry)
+                    .color(cl)
+                    .size(s2)
+                    .draw_using(&BOLD_FONT);
+                let lr = ui
+                    .text(format!("{early}"))
+                    .pos(lr.right() + 0.015, ry)
+                    .color(Color::from_hex_rgb(0x81d4fa))
+                    .size(s2)
+                    .draw_using(&BOLD_FONT);
+                /* 偏差条：以中心为 0，往左蓝色（早）、往右橙色（晚）。
+                   长度按比例分，两边加起来占满整条 —— 一眼看出偏向哪边。 */
+                let bar = Rect::new(lr.right() + 0.035, ry + 0.014, 0.42, 0.075);
+                ui.fill_rect(bar, Color { a: 0.28, ..WHITE });
+                let cx = bar.x + bar.w / 2.;
+                let p = early as f32 / total_timed as f32;
+                if early > 0 {
+                    ui.fill_rect(
+                        Rect::new(bar.x, bar.y, bar.w * p, bar.h),
+                        Color::from_hex_rgb(0x81d4fa),
+                    );
+                }
+                if late > 0 {
+                    ui.fill_rect(
+                        Rect::new(cx, bar.y, bar.w * (1. - p), bar.h),
+                        Color::from_hex_rgb(0xffab91),
+                    );
+                }
+                /* 中线压在最上面，标出"零点"在哪 */
+                ui.fill_rect(Rect::new(cx - 0.002, bar.y - 0.012, 0.004, bar.h + 0.024), semi_white(0.85));
+                let rr2 = ui
+                    .text(format!("{late}"))
+                    .pos(bar.right() + 0.02, ry)
+                    .color(Color::from_hex_rgb(0xffab91))
+                    .size(s2)
+                    .draw_using(&BOLD_FONT);
+                ui.text("晚").pos(rr2.right() + 0.015, ry).color(cl).size(s2).draw_using(&BOLD_FONT);
+            }
+
+            let ry2 = ry + 0.11;
+            let loss = 1_000_000u32.saturating_sub(res.score);
+            let loss_judge = ((0.9 * (1. - res.accuracy)) * 1_000_000.).round().max(0.) as u32;
+            let loss_combo = loss.saturating_sub(loss_judge);
+            let lr = ui
+                .text(tl!("lost"))
+                .pos(lf - 0.017, ry2)
+                .color(cl)
+                .size(s)
+                .draw_using(&BOLD_FONT);
+            let lr = ui
+                .text(thousands(loss))
+                .pos(lr.right() + 0.02, ry2)
+                .color(ct)
+                .size(s)
+                .draw_using(&BOLD_FONT);
+            let lr = ui.text("=").pos(lr.right() + 0.025, ry2).color(cs).size(s).draw();
+            let lr = ui
+                .text(tl!("lost-judge"))
+                .pos(lr.right() + 0.025, ry2)
+                .color(cl)
+                .size(s)
+                .draw_using(&BOLD_FONT);
+            let lr = ui
+                .text(thousands(loss_judge))
+                .pos(lr.right() + 0.02, ry2)
+                .color(ct)
+                .size(s)
+                .draw_using(&BOLD_FONT);
+            let lr = ui.text("+").pos(lr.right() + 0.025, ry2).color(cs).size(s).draw();
+            let lr = ui
+                .text(tl!("lost-combo"))
+                .pos(lr.right() + 0.025, ry2)
+                .color(cl)
+                .size(s)
+                .draw_using(&BOLD_FONT);
+            ui.text(thousands(loss_combo))
+                .pos(lr.right() + 0.02, ry2)
+                .color(ct)
+                .size(s)
+                .draw_using(&BOLD_FONT);
 
             let mut y = -top + 0.4 + ui.top * 0.3;
             let tp = y;
