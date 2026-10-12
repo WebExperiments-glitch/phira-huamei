@@ -49,11 +49,13 @@ jobs:
       #    rust-toolchain.toml 固定 nightly-2026-01-01 且要求
       #    clippy / rustfmt / rust-analyzer 三个组件。这里按它要求的装齐，
       #    否则第一次 cargo 调用时 rustup 才去补装，日志里表现为莫名其妙的卡住。
+      #    ⚠ `toolchain install` **没有 -y**（它本来就不交互）—— 加了会直接
+      #      "error: unexpected argument '-y' found"，第一轮 CI 就栽在这。
       - name: 安装 Rust 工具链与 iOS target
         run: |
           set -euo pipefail
           rustup toolchain install nightly-2026-01-01 --profile minimal \
-            --component clippy,rustfmt,rust-analyzer -y
+            --component clippy,rustfmt,rust-analyzer
           rustup target add aarch64-apple-ios --toolchain nightly-2026-01-01
           rustc --version
           echo "---- 已装的 apple target ----"
