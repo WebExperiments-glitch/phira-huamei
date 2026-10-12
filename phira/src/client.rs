@@ -45,8 +45,9 @@ pub const API_URL: &str = match option_env!("HUAMEI_API_BASE") {
 /// **改动客户端行为就 +1**，否则线上出问题时分不清批次。
 /// ⚠ 服务端**不**用它做任何门控（只存不判），所以升级无兼容风险。
 ///   它长期停在 `huamei.1`，中间攒了 9 次改动都没动 —— 别学。
-/// 本次 +1：修掉服务端 `score_mismatch` 误拒之后，补上一致性告警的落盘。
-pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.10";
+/// 本次 +1：账号体系换成自建的（注册只要邮箱+密码，之后只输密码），
+/// 并补上大厅 BGM。这两件事都改变了客户端行为与上报内容，必须能分辨批次。
+pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.11";
 
 /// 站点根 —— 取谱代理、云端鉴权、成绩上报都挂在它下面。
 ///

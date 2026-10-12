@@ -414,25 +414,25 @@ struct GeneralList {
 /// 只用内置的文本输入框（`request_input` / `take_input`）驱动，
 /// 不新造面板 —— 上游那个 `Login` 面板（1000 行）是强绑 Phira 账号 API 的，
 /// 硬塞进来会把两套账号体系搅在一起。
+///
+/// 【流程（2026-10-12 简化为自建账号）】
+///   没记住邮箱 → 问邮箱 → 问密码 → **注册**
+///   记住邮箱了 → 只问密码 → **登录**
+/// 也就是说：只有第一次要填邮箱，之后每次只输密码。
+/// 想换账号就先登出（登出会清掉记住的邮箱）。
 #[derive(Default)]
 enum HuameiStage {
     #[default]
     Idle,
-    /// 正在发验证码
-    Sending,
-    /// 验证码已发出，等用户输入
-    WaitCode {
-        verification_id: String,
-        email: String,
-        is_existing: bool,
-    },
-    /// 正在校验验证码
-    Verifying,
+    /// 邮箱已到手，等用户输密码。`register` 决定提交时走注册还是登录。
+    WaitPassword { email: String, register: bool },
+    /// 网络请求中
+    Busy,
 }
 
 impl HuameiStage {
     fn busy(&self) -> bool {
-        matches!(self, HuameiStage::Sending | HuameiStage::Verifying)
+        matches!(self, HuameiStage::Busy)
     }
 }
 
@@ -568,7 +568,7 @@ impl GeneralList {
             request_input("anys_gateway", InputBox::new().default_text(&data.anys_gateway));
             return Ok(Some(true));
         }
-        // ── 【huamei】账号按钮：已登录就登出，未登录就开始发验证码 ──
+        // ── 【huamei】账号按钮：已登录就登出，未登录就开始注册/登录 ──
         if self.huamei_btn.touch(touch, t) {
             if self.huamei_stage.busy() {
                 return Ok(Some(true));
@@ -576,15 +576,28 @@ impl GeneralList {
             if crate::huamei::current_token().is_some() {
                 let d = get_data_mut();
                 d.huamei_token = None;
+                /* ⚠ 登出要**同时清掉记住的邮箱** —— 它决定了下次是「登录」还是
+                   「注册」。只清 token 的话，用户想换账号会被永远锁在密码那一步
+                   （因为邮箱还在，流程不会再问邮箱）。 */
                 d.huamei_email = None;
                 save_data()?;
-                show_message("已退出 huamei 账号").ok();
+                show_message("已退出 huamei 账号（下次要重新填邮箱注册）").ok();
+            } else if let Some(email) = get_data().huamei_email.clone() {
+                // 记得邮箱 → 只问密码，走登录
+                self.huamei_stage = HuameiStage::WaitPassword { email, register: false };
+                request_input(
+                    "huamei_password",
+                    InputBox::new()
+                        .title(Cow::Borrowed("huamei 账号"))
+                        .prompt(Cow::Borrowed("密码")),
+                );
             } else {
+                // 没记住邮箱 → 这是第一次，问邮箱，之后走注册
                 request_input(
                     "huamei_email",
                     InputBox::new()
                         .title(Cow::Borrowed("huamei 账号"))
-                        .prompt(Cow::Borrowed("邮箱（用于接收验证码）")),
+                        .prompt(Cow::Borrowed("邮箱（注册用，只需填这一次）")),
                 );
             }
             return Ok(Some(true));
@@ -620,8 +633,7 @@ impl GeneralList {
             } else if id == "huamei_email" {
                 // ① 先把全角折成半角 —— 输入法切到全角是真踩过的坑：
                 //    `ｐｙｚ…＠ｑｑ．ｃｏｍ` 看着和半角一模一样，正则却一律不认。
-                // ② 再按服务端的规则**本地**校验，这样能指出具体哪个字符不对，
-                //    而不是把服务端的 protobuf 报错原样糊出来。
+                // ② 再按服务端的规则**本地**校验，这样能指出具体哪个字符不对。
                 let email = crate::huamei::normalize_email(&text);
                 if let Err(msg) = crate::huamei::validate_email(&email) {
                     // 把原貌落盘 —— 不可见字符（\r、NUL、BOM）在屏幕上根本看不出来，
@@ -634,67 +646,55 @@ impl GeneralList {
                 if email != text {
                     show_message(format!("已自动修正为 {email}")).ok();
                 }
-                self.huamei_stage = HuameiStage::Sending;
-                self.huamei_task = Some(Task::new(crate::huamei::start_login(email)));
-                return Ok(true);
-            } else if id == "huamei_code" {
-                // 换出状态，避免在等网络时重复提交
-                let stage = std::mem::replace(&mut self.huamei_stage, HuameiStage::Verifying);
-                if let HuameiStage::WaitCode {
-                    verification_id,
+                // 邮箱到手 → 接着问密码。这是**注册**（没记住邮箱才会走到这）。
+                self.huamei_stage = HuameiStage::WaitPassword {
                     email,
-                    is_existing,
-                } = stage
-                {
-                    let code = text.trim().to_string();
-                    // 验证码也落盘 —— 输入框的两层污染（UTF-16 / 子进程噪声）
-                    // 对**每个**单行对话框都成立，不只邮箱。
-                    crate::huamei::log_login_debug("code", &text, &code);
-                    self.huamei_task = Some(Task::new(crate::huamei::finish_login(
-                        verification_id,
-                        code,
-                        email,
-                        is_existing,
-                    )));
-                } else {
+                    register: true,
+                };
+                request_input(
+                    "huamei_password",
+                    InputBox::new()
+                        .title(Cow::Borrowed("huamei 账号"))
+                        .prompt(Cow::Borrowed("设一个密码（至少 8 位，之后登录就用它）")),
+                );
+                return Ok(true);
+            } else if id == "huamei_password" {
+                // 换出状态，避免在等网络时重复提交
+                let stage = std::mem::replace(&mut self.huamei_stage, HuameiStage::Busy);
+                let HuameiStage::WaitPassword { email, register } = stage else {
                     self.huamei_stage = HuameiStage::Idle;
+                    return Ok(true);
+                };
+                let password = text.trim().to_owned();
+                if let Err(msg) = crate::huamei::validate_password(&password) {
+                    // ⚠ 密码**不落盘**（哪怕是调试日志）——它和邮箱/验证码不是一类东西。
+                    self.huamei_stage = HuameiStage::Idle;
+                    show_error(anyhow::anyhow!("{msg}"));
+                    return Ok(false);
                 }
+                self.huamei_task = Some(Task::new(async move {
+                    if register {
+                        crate::huamei::register(&email, &password).await
+                    } else {
+                        crate::huamei::login(&email, &password).await
+                    }
+                }));
                 return Ok(true);
             } else {
                 return_input(id, text);
             }
         }
-        // ── 【huamei】登录流程推进 ──
+        // ── 【huamei】注册/登录流程推进 ──
         if let Some(mut task) = self.huamei_task.take() {
             if let Some(res) = task.take() {
                 self.huamei_stage = HuameiStage::Idle;
                 match res {
-                    Err(err) => show_error(err.context("huamei 登录失败")),
-                    Ok(crate::huamei::Step::OtpSent {
-                        verification_id,
-                        email,
-                        is_existing,
-                    }) => {
-                        // ⚠ 先把回显串取出来 —— 下面 `email` 会被移进 WaitCode
-                        let echo = email.clone();
-                        self.huamei_stage = HuameiStage::WaitCode {
-                            verification_id,
-                            email,
-                            is_existing,
-                        };
-                        request_input(
-                            "huamei_code",
-                            InputBox::new()
-                                .title(Cow::Borrowed("huamei 账号"))
-                                .prompt(Cow::Borrowed("邮箱里收到的验证码")),
-                        );
-                        // ⚠ 这里把**实际发出去的串**回显出来 —— 全角形近字
-                        //   肉眼几乎分不出来，只有回显才能立刻发现。
-                        show_message(format!("验证码已发到 {echo}，请查看邮箱")).ok();
-                    }
+                    Err(err) => show_error(err.context("huamei 账号")),
                     Ok(crate::huamei::Step::LoggedIn { token, email }) => {
                         let d = get_data_mut();
                         d.huamei_token = Some(token);
+                        /* ⚠ 邮箱要**存下来** —— 它就是「下次只问密码」的依据。
+                           不存的话每次都要重填邮箱，等于白做这套流程。 */
                         d.huamei_email = email.clone();
                         save_data()?;
                         show_message(format!(
@@ -795,20 +795,26 @@ impl GeneralList {
         }
         // ── 【huamei】账号行 ──
         // 标签在进 item! 之前算好（后面要可变借 self.huamei_btn，不能同时持有它的字段借用）
+        //
+        // 【文案规矩】未登录那一档要**说清楚不用登录也能玩** ——
+        // 不然玩家会以为不登录就进不去，那就白白挡掉了一批数据。
         let huamei_label: String = if self.huamei_stage.busy() {
             "…".into()
-        } else if matches!(self.huamei_stage, HuameiStage::WaitCode { .. }) {
-            "等待验证码…".into()
+        } else if matches!(self.huamei_stage, HuameiStage::WaitPassword { .. }) {
+            "等待密码…".into()
         } else if let Some(email) = &data.huamei_email {
             format!("{email} · 退出")
         } else {
-            "登录".into()
+            "注册 / 登录".into()
         };
         item! {
             render_title(
                 ui,
-                Cow::Borrowed("huamei 账号"),
-                Some(Cow::Borrowed("登录后每局成绩自动上传，用于分析你在这张谱上哪里失分")),
+                Cow::Borrowed("huamei 账号（可选）"),
+                Some(Cow::Borrowed(
+                    "不登录也能正常玩；登录只多做一件事：把每局的逐音符判定传上来，\
+                     用于分析你在这张谱上哪里失分。第一次填邮箱+密码注册，之后只需密码。",
+                )),
             );
             self.huamei_btn.render_text(ui, rr, t, &huamei_label, 0.4, false);
         }

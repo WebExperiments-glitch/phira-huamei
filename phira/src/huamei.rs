@@ -35,49 +35,11 @@ use crate::{
 const KEY_HEADER: &str = "x-wb-webapp-access-key";
 
 // 基址从 `HUAMEI_SITE` 派生（`const` 里没法拼接运行时才知道的串，用函数）。
-// `/.cloud/*` 走平台边缘，`/api/hm/*` 走我们自己的 server.mjs。
-fn auth_base() -> String {
-    format!("{HUAMEI_SITE}/.cloud/auth/v1")
-}
-
+// 全部走我们自己的 server.mjs：`/api/hm/*`。
+// ⚠ 这里**曾经**还有第二个基址 `/.cloud/auth/v1`（平台云认证）。换成自建账号后
+//   整条路都走 `/api/hm/*`，那个基址和它专用的 me()/Session/OtpStarted 一起删了。
 fn hm_base() -> String {
     format!("{HUAMEI_SITE}/api/hm")
-}
-
-/// 登录会话。字段名跟服务端 snake_case 一致。
-#[derive(Clone, Debug, Deserialize)]
-pub struct Session {
-    pub access_token: String,
-    #[serde(default)]
-    pub refresh_token: String,
-    #[serde(default)]
-    pub expires_in: i64,
-    #[serde(default)]
-    pub sub: String,
-    #[serde(default)]
-    pub email: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct OtpStarted {
-    #[serde(default)]
-    pub verification_id: String,
-    #[serde(default)]
-    pub is_user: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct VerifyResp {
-    #[serde(default)]
-    verification_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Me {
-    #[serde(default)]
-    pub sub: String,
-    #[serde(default)]
-    pub email: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -229,75 +191,119 @@ async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
 /// 第一步：发邮箱验证码。返回 `verification_id`（下一步要用）。
 ///
 /// 对应 SDK 的 `auth.sendOtp({ email })`。
-pub async fn send_otp(email: &str) -> Result<OtpStarted> {
-    let body = serde_json::json!({ "email": email, "usage": "email" });
-    post_json::<_, OtpStarted>("发验证码", &format!("{}/verification", auth_base()), &body, None).await
-}
-
-/// 第二步：验证码换会话。
+/// 自建账号：注册 / 登录。
 ///
-/// `is_existing` 来自第一步的 `is_user` —— 新老用户走**不同的端点**：
-///   老用户 `POST /signin`  body `{username, verification_token}`
-///   新用户 `POST /signup`  body `{email, password, verification_token}`
-/// （新用户必须带密码，否则「用没有密码的账号永远登不进去」。）
-pub async fn verify_otp(
-    verification_id: &str,
-    code: &str,
+/// 【为什么不再是平台云认证】
+///   原先走 `.cloud/auth/v1`，每次登录都要邮箱 + 验证码；而且 SDK 明确拒绝
+///   「只有用户名+密码」的注册（`signUp requires a verificationToken`），
+///   所以「填完邮箱就填密码、然后完成注册」在平台侧做不到。
+///   现在账号在我们自己手里（`phm-web/lib/hm-accounts.mjs`）：
+///     注册 = 邮箱 + 密码，无验证码
+///     登录 = 邮箱 + 密码（邮箱由客户端记住，用户只输密码）
+///
+/// 【错误码】服务端回**稳定错误码**，客户端翻译成人话。
+///   email_invalid / password_invalid → 输入不合法，改一下就能好
+///   email_taken                      → 注册时邮箱已被占用
+///   bad_credentials                  → 登录时邮箱或密码不对
+///                                      （刻意不区分「账号不存在」和「密码错」，
+///                                       否则这个接口成了账号枚举器）
+#[derive(Debug, Deserialize)]
+struct AccountResp {
+    #[serde(default)]
+    ok: bool,
+    #[serde(default)]
+    token: Option<String>,
+    /* 服务端还会回 `sub`（账号 id）。**故意不接** —— 它是 token 里的一个声明，
+       客户端拿它没有任何用处（上报时服务端自己从 token 取）。多存一份就多一处
+       可能与 token 不一致的地方，所以只在需要时从服务端拿。 */
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
+}
+
+/// 调 `/api/hm/register` 或 `/api/hm/login`。
+/// 成功返回 token，失败返回 `(错误码, 详情)`。
+///
+/// ⚠ 刻意不复用 `post_json`：它把错误糊成一句字符串，这里需要**错误码**
+///   才能给出「该改输入还是该重试」的区分。
+async fn account_call(
+    step: &str,
+    path: &str,
     email: &str,
-    is_existing: bool,
-    password: Option<&str>,
-) -> Result<Session> {
-    let vbody = serde_json::json!({
-        "verification_id": verification_id,
-        "verification_code": code,
-    });
-    let v: VerifyResp =
-        post_json("校验验证码", &format!("{}/verification/verify", auth_base()), &vbody, None).await?;
-    if v.verification_token.is_empty() {
-        bail!("服务端没有返回 verification_token");
-    }
-
-    if is_existing {
-        let body = serde_json::json!({
-            "username": email,
-            "verification_token": v.verification_token,
-        });
-        post_json("登录（老用户）", &format!("{}/signin", auth_base()), &body, None).await
-    } else {
-        /* ⚠ 空密码要**直接不发这个字段** —— SDK 里是 `e.password && (t.password = e.password)`，
-           空串会让它整条消失（`""` 是 falsy）。发 `"password": ""` 是另一回事，
-           服务端可能因此走不同分支。这里严格对齐 SDK。 */
-        let mut body = serde_json::json!({
-            "email": email,
-            "verification_token": v.verification_token,
-        });
-        let pw = password.unwrap_or("");
-        if !pw.is_empty() {
-            body["password"] = serde_json::Value::String(pw.to_owned());
-        }
-        post_json("注册（新用户）", &format!("{}/signup", auth_base()), &body, None).await
-    }
-}
-
-/// 密码登录。对应 SDK 的 `auth.signInWithPassword`。
-pub async fn sign_in_password(email: &str, password: &str) -> Result<Session> {
-    let body = serde_json::json!({ "username": email, "password": password });
-    post_json("密码登录", &format!("{}/signin", auth_base()), &body, None).await
-}
-
-/// 校验当前 token 是否有效，返回用户信息。
-pub async fn me(token: &str) -> Result<Me> {
+    password: &str,
+) -> std::result::Result<String, (String, Option<String>)> {
+    let body = serde_json::json!({ "email": email, "password": password });
     let resp = bare_client()
-        .get(format!("{}/user/me", auth_base()))
-        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .post(format!("{}/{}", hm_base(), path))
+        .json(&body)
         .send()
-        .await?;
+        .await
+        .map_err(|e| ("network".to_string(), Some(e.to_string())))?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!("token 无效（{status}）");
+    log_debug_line(&format!(
+        "[step] {step} → HTTP {status} ok body={}",
+        text.chars().take(200).collect::<String>()
+    ));
+    let r: AccountResp = serde_json::from_str(&text).map_err(|_| {
+        ("bad_response".to_string(), Some(text.chars().take(200).collect()))
+    })?;
+    if !status.is_success() || !r.ok {
+        let code = r.error.unwrap_or_else(|| format!("http_{}", status.as_u16()));
+        return Err((code, r.detail));
     }
-    serde_json::from_str(&text).context("user/me 返回的不是预期 JSON")
+    r.token
+        .filter(|it| !it.is_empty())
+        .ok_or_else(|| ("no_token".to_string(), None))
+}
+
+/// 把服务端错误码翻成人话。
+///
+/// ⚠ `detail` **只在输入不合法时透出** —— 那是帮用户改对的提示。
+///   凭据类错误的 detail 可能是数据库原始报文，不该往界面上糊。
+fn account_error(step: &str, code: &str, detail: Option<&str>) -> anyhow::Error {
+    let msg = match code {
+        "email_invalid" => format!(
+            "邮箱格式不对：{}",
+            detail.unwrap_or("请检查是否只有一个 @、域名有没有带点")
+        ),
+        "password_invalid" => format!(
+            "密码不符合要求：{}",
+            detail.unwrap_or("至少 8 位")
+        ),
+        "email_taken" => "这个邮箱已经注册过了 —— 请直接用密码登录".to_string(),
+        "bad_credentials" => "邮箱或密码不对。如果这是新账号，请先退出当前账号再注册".to_string(),
+        "unavailable" => "服务端没配好，暂时不能注册/登录".to_string(),
+        "store_failed" => "服务端出错了，请稍后再试".to_string(),
+        "network" => "连不上服务器，请检查网络".to_string(),
+        "bad_response" => "服务端返回了看不懂的内容，请稍后再试".to_string(),
+        "no_token" => "服务端没给 token，请重试".to_string(),
+        other => format!("{step}失败（{other}）"),
+    };
+    anyhow::anyhow!(msg)
+}
+
+/// 注册：邮箱 + 密码，**不需要验证码**。
+pub async fn register(email: &str, password: &str) -> Result<Step> {
+    let token = account_call("注册", "register", email, password)
+        .await
+        .map_err(|(code, detail)| account_error("注册", &code, detail.as_deref()))?;
+    Ok(Step::LoggedIn {
+        token,
+        email: Some(email.to_owned()),
+    })
+}
+
+/// 登录：邮箱 + 密码。邮箱由客户端记住，用户只输密码。
+pub async fn login(email: &str, password: &str) -> Result<Step> {
+    let token = account_call("登录", "login", email, password)
+        .await
+        .map_err(|(code, detail)| account_error("登录", &code, detail.as_deref()))?;
+    Ok(Step::LoggedIn {
+        token,
+        email: Some(email.to_owned()),
+    })
 }
 
 /// 当前登录用的 token。优先用已保存的会话，其次看 `HUAMEI_TOKEN` 环境变量
@@ -322,25 +328,19 @@ pub fn current_token() -> Option<String> {
 ///   所以任务只把结果**带回来**，由调用方写。
 #[derive(Debug)]
 pub enum Step {
-    /// 验证码已发出，等用户输入
-    OtpSent {
-        verification_id: String,
-        email: String,
-        is_existing: bool,
-    },
-    /// 登录成功
+    /// 注册 / 登录成功，拿到 token
     LoggedIn { token: String, email: Option<String> },
 }
 
 /// 【前置邮箱校验】—— 把服务端的校验规则**原样**搬到本地，提前拦下来。
 ///
-/// 服务端（`.cloud/auth/v1/verification`）对一个不合法邮箱的回应是：
+/// 【原来的写法】这里贴的是平台云认证对一个不合法邮箱的回应。换成自建账号后服务端换了，但「提前拦下来、指出哪个字符不对」这件事不变，
 /// ```
 /// {"code":"INVALID_ARGUMENT","error":"invalid_argument","error_code":3,
 ///  "error_description":"invalid SendVerificationCodeRequest.Email: value does not
 ///   match regex pattern \"^$|^[.0-9A-Za-z_-]{1,40}@[.0-9..."}
 /// ```
-/// 这段 protobuf 报文直接糊进对话框，用户只会看到"登录失败"。
+/// 规则仍以 `phm-web/lib/hm-accounts.mjs` 的 validateEmail 为准。
 ///
 /// 实测出来的规则（2026-10-11，逐个试过）：
 /// | 输入 | 结果 |
@@ -389,13 +389,16 @@ pub fn validate_email(email: &str) -> std::result::Result<(), String> {
     if domain.contains('@') {
         return Err(format!("「{shown}」里有不止一个 @"));
     }
+    /* ⚠ 允许的字符集**照抄服务端**（`lib/hm-accounts.mjs` 的 validateEmail）：
+       英文、数字、以及 . ! # $ % & ' * + / = ? ^ _ ` { | } ~ -
+       以前禁 `+` 是**平台**的限制（它的正则不收），现在我们自己存账号，
+       没有理由继承。两边规则必须一致，否则会出现「本地说合法、服务端说非法」。 */
     if let Some(c) = local
         .chars()
-        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+        .find(|c| !(c.is_ascii_alphanumeric() || "!#$%&'*+/=?^_`{|}~-".contains(*c)))
     {
         return Err(format!(
-            "「{shown}」：@ 前面不能有「{c}」—— 只允许英文、数字、点、下划线、减号。\
-             ⚠ 不支持加号别名（name+tag@…），请用主邮箱地址"
+            "「{shown}」：@ 前面不能有「{c}」—— 只允许英文、数字和 . ! # $ % & ' * + / = ? ^ _ ` {{ | }} ~ -"
         ));
     }
     if domain.is_empty() || !domain.contains('.') {
@@ -562,51 +565,26 @@ pub fn log_login_debug(tag: &str, raw: &str, normalized: &str) {
 }
 
 /// 发起第一步：发验证码。
-pub async fn start_login(email: String) -> Result<Step> {
-    let r = send_otp(&email).await?;
-    if r.verification_id.is_empty() {
-        bail!("服务端没有返回 verification_id");
+/// 密码格式校验（本地先拦一道，别什么都往服务端送）。
+///
+/// 规则与 `phm-web/lib/hm-accounts.mjs` 的 `validatePassword` **一致** ——
+/// 两边不一致会出现「本地说合法、服务端说非法」的怪事。
+pub fn validate_password(pw: &str) -> std::result::Result<(), String> {
+    if pw.is_empty() {
+        return Err("密码不能为空".into());
     }
-    Ok(Step::OtpSent {
-        verification_id: r.verification_id,
-        email,
-        is_existing: r.is_user,
-    })
+    if pw.chars().count() < 8 {
+        return Err(format!("密码至少 8 位（当前 {} 位）", pw.chars().count()));
+    }
+    if pw.chars().count() > 128 {
+        return Err("密码太长（最多 128 位）".into());
+    }
+    if pw.chars().all(|c| c.is_whitespace()) {
+        return Err("密码不能全是空白字符".into());
+    }
+    Ok(())
 }
 
-/// 第二步：验证码换 token。
-///
-/// 新用户会走 `signup`，而它**要求密码**。客户端这里先不带密码
-/// （`password: None` → 空串）—— 空密码账号以后不能用密码登录，
-/// 但用验证码仍然能登，对我们是够的。
-pub async fn finish_login(
-    verification_id: String,
-    code: String,
-    email: String,
-    is_existing: bool,
-) -> Result<Step> {
-    let s = verify_otp(&verification_id, &code, &email, is_existing, None).await?;
-    if s.access_token.is_empty() {
-        bail!("服务端没有返回 access_token");
-    }
-    Ok(Step::LoggedIn {
-        token: s.access_token,
-        email: s.email.or(Some(email)),
-    })
-}
-
-// ══════════════════════════════════════════════════════════════
-// 成绩上报
-// ══════════════════════════════════════════════════════════════
-
-/// 把 prpr 组好的载荷补上 `client_ver` 与 `chart_digest`，POST 到 `/api/hm/play`。
-///
-/// `chart_digest` 是 **sha256(谱面文件字节)，hex** —— 与 Phira 官方
-/// `/chart/{id}/verify-cksum` 同一个算法（`song.rs:2307` 已有现成写法）。
-/// 服务端据此判断「谱面有没有被改过」，digest 不一致的数据永不与其他数据混合。
-///
-/// `payload_json` 是 prpr 序列化的 `HuameiPayload`（`client_ver` 空、
-/// `chart_digest` 为 null）。这里重新序列化成上传体，不原地改 JSON。
 pub async fn upload_play(payload_json: &[u8], chart_digest: Option<String>) -> Result<UploadResp> {
     let Some(token) = current_token() else {
         bail!("未登录 huamei 账号");
