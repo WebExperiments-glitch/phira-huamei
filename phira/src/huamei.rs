@@ -232,8 +232,14 @@ async fn account_call(
     path: &str,
     email: &str,
     password: &str,
+    code: Option<&str>,
 ) -> std::result::Result<String, (String, Option<String>)> {
-    let body = serde_json::json!({ "email": email, "password": password });
+    let mut body = serde_json::json!({ "email": email, "password": password });
+    /* 验证码只在注册时带。**登录永远不带** —— 产品定的是「注册要码、登录只要密码」，
+       登录侧靠 per-IP + per-邮箱 三重限流兜着。 */
+    if let Some(c) = code {
+        body["code"] = serde_json::Value::String(c.to_owned());
+    }
     let resp = bare_client()
         .post(format!("{}/{}", hm_base(), path))
         .json(&body)
@@ -273,6 +279,16 @@ fn account_error(step: &str, code: &str, detail: Option<&str>) -> anyhow::Error 
             detail.unwrap_or("至少 8 位")
         ),
         "email_taken" => "这个邮箱已经注册过了 —— 请直接用密码登录".to_string(),
+        /* ── 验证码：每一条都要能直接指导下一步，别只说"失败" ── */
+        "code_required" => "这次注册需要邮箱验证码，但没有带上 —— 请重新走一遍注册".to_string(),
+        "code_missing" => "没找到这个邮箱的验证码，请点「注册」重新发一封".to_string(),
+        "code_wrong" => "验证码不对，请照着邮件里最新的那封填".to_string(),
+        "code_invalid" => "验证码格式不对（应该是邮件里那串数字）".to_string(),
+        "code_expired" => "验证码过期了（10 分钟有效），请重新发一封".to_string(),
+        "code_used" => "这个验证码已经用过了，请重新发一封".to_string(),
+        "code_too_many" => "这个验证码试错太多次，已作废 —— 请重新发一封".to_string(),
+        "send_failed" => "验证码没发出去（服务端的邮件通道出问题了），请稍后再试".to_string(),
+        "verify_failed" => "验证服务暂时不可用，请稍后再试".to_string(),
         "bad_credentials" => "邮箱或密码不对。如果这是新账号，请先退出当前账号再注册".to_string(),
         "unavailable" => "服务端没配好，暂时不能注册/登录".to_string(),
         "store_failed" => "服务端出错了，请稍后再试".to_string(),
@@ -284,20 +300,54 @@ fn account_error(step: &str, code: &str, detail: Option<&str>) -> anyhow::Error 
     anyhow::anyhow!(msg)
 }
 
-/// 注册：邮箱 + 密码，**不需要验证码**。
-pub async fn register(email: &str, password: &str) -> Result<Step> {
-    let token = account_call("注册", "register", email, password)
+/// 注册：邮箱 + 密码 + **邮箱验证码**。
+///
+/// 【为什么必须验证码】
+///   不要码 = 谁都能拿别人的邮箱批量注册（白帽报告第 4 条）。服务端
+///   `REQUIRE_EMAIL_CODE` 打开后缺码会回 `code_required`，这里翻译成
+///   「验证码没填/过期了，重新发一次」。
+pub async fn register(email: &str, password: &str, code: &str) -> Result<Step> {
+    let token = account_call("注册", "register", email, password, Some(code))
         .await
-        .map_err(|(code, detail)| account_error("注册", &code, detail.as_deref()))?;
+        .map_err(|(err, detail)| account_error("注册", &err, detail.as_deref()))?;
     Ok(Step::LoggedIn {
         token,
         email: Some(email.to_owned()),
     })
 }
 
+/// 请求一封注册验证码。
+///
+/// ⚠ 服务端对**已注册**的邮箱会回 `email_taken` —— 这不是错误，是提示：
+///   直接告诉他「这个邮箱注册过了，直接输密码登录」，比让他输完码再被拒好。
+pub async fn send_code(email: &str, purpose: &str) -> Result<()> {
+    let body = serde_json::json!({ "email": email, "purpose": purpose });
+    let resp = bare_client()
+        .post(format!("{}/send-code", hm_base()))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("连不上服务器，验证码没发出去：{e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    log_debug_line(&format!(
+        "[step] send-code → HTTP {status} ok body={}",
+        text.chars().take(200).collect::<String>()
+    ));
+    let r: AccountResp = serde_json::from_str(&text)
+        .map_err(|_| anyhow::anyhow!("服务端返回了看不懂的内容，验证码可能没发出去"))?;
+    if !status.is_success() || !r.ok {
+        let code = r.error.unwrap_or_else(|| format!("http_{}", status.as_u16()));
+        /* 这里借 account_error 的翻译，但**去掉「注册」前缀** —— 用户看到的
+           应该是「验证码没发出去」，不是「注册失败」。 */
+        return Err(account_error("发送验证码", &code, r.detail.as_deref()));
+    }
+    Ok(())
+}
+
 /// 登录：邮箱 + 密码。邮箱由客户端记住，用户只输密码。
 pub async fn login(email: &str, password: &str) -> Result<Step> {
-    let token = account_call("登录", "login", email, password)
+    let token = account_call("登录", "login", email, password, None)
         .await
         .map_err(|(code, detail)| account_error("登录", &code, detail.as_deref()))?;
     Ok(Step::LoggedIn {

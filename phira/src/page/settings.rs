@@ -404,6 +404,10 @@ struct GeneralList {
     huamei_btn: DRectButton,
     huamei_stage: HuameiStage,
     huamei_task: Option<Task<Result<crate::huamei::Step>>>,
+    /* 单独一条任务：只负责「把验证码发出去」。
+       ⚠ 不能塞进 huamei_task —— 那条任务一完成就会被当成**登录/注册结束**
+         （状态机归 Idle + 弹「已登录」），发个码不该有这个副作用。 */
+    huamei_code_task: Option<Task<Result<()>>>,
 
     cache_size: Option<u64>,
     cache_task: Option<Task<Result<u64>>>,
@@ -426,6 +430,9 @@ enum HuameiStage {
     Idle,
     /// 邮箱已到手，等用户输密码。`register` 决定提交时走注册还是登录。
     WaitPassword { email: String, register: bool },
+    /// 注册专用：密码也收到了，验证码已发出，等用户把邮件里那串数字填进来。
+    /// 登录**不走这一步**（登录只要密码）。
+    WaitCode { email: String, password: String },
     /// 网络请求中
     Busy,
 }
@@ -470,6 +477,7 @@ impl GeneralList {
             huamei_btn: DRectButton::new(),
             huamei_stage: HuameiStage::default(),
             huamei_task: None,
+            huamei_code_task: None,
 
             cache_size: None,
             cache_task: None,
@@ -672,16 +680,67 @@ impl GeneralList {
                     show_error(anyhow::anyhow!("{msg}"));
                     return Ok(false);
                 }
+                if register {
+                    /* 注册多一步：**先发码、再问码**。
+                       顺序不能反 —— 等用户输完再去发，他会盯着屏幕等一封还没寄出的邮件。
+                       发码是独立任务（huamei_code_task），失败只提示、不把状态机打回 Idle，
+                       否则用户刚输完的密码就白丢了。 */
+                    let mail = email.clone();
+                    self.huamei_code_task = Some(Task::new(async move {
+                        crate::huamei::send_code(&mail, "register").await
+                    }));
+                    self.huamei_stage = HuameiStage::WaitCode { email, password };
+                    request_input(
+                        "huamei_code",
+                        InputBox::new()
+                            .title(Cow::Borrowed("huamei 账号"))
+                            .prompt(Cow::Borrowed("把邮箱收到的验证码填进来（10 分钟内有效）")),
+                    );
+                    return Ok(true);
+                }
                 self.huamei_task = Some(Task::new(async move {
-                    if register {
-                        crate::huamei::register(&email, &password).await
-                    } else {
-                        crate::huamei::login(&email, &password).await
-                    }
+                    crate::huamei::login(&email, &password).await
+                }));
+                return Ok(true);
+            } else if id == "huamei_code" {
+                /* 注册的最后一步。填错了**不让重头再来** —— 把状态原样放回去并
+                   重新弹一次输入框，否则用户得从邮箱开始再跑一遍整个流程。 */
+                let stage = std::mem::replace(&mut self.huamei_stage, HuameiStage::Busy);
+                let HuameiStage::WaitCode { email, password } = stage else {
+                    self.huamei_stage = HuameiStage::Idle;
+                    return Ok(true);
+                };
+                let code: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
+                if !(4..=8).contains(&code.len()) {
+                    self.huamei_stage = HuameiStage::WaitCode { email, password };
+                    show_error(anyhow::anyhow!("验证码是 4–8 位数字，照着邮件里填"));
+                    request_input(
+                        "huamei_code",
+                        InputBox::new()
+                            .title(Cow::Borrowed("huamei 账号"))
+                            .prompt(Cow::Borrowed("把邮箱收到的验证码填进来（10 分钟内有效）")),
+                    );
+                    return Ok(false);
+                }
+                self.huamei_task = Some(Task::new(async move {
+                    crate::huamei::register(&email, &password, &code).await
                 }));
                 return Ok(true);
             } else {
                 return_input(id, text);
+            }
+        }
+        // ── 【huamei】验证码发送（独立任务，不影响主状态机）──
+        if let Some(mut task) = self.huamei_code_task.take() {
+            if let Some(res) = task.take() {
+                if let Err(err) = res {
+                    /* 只提示。状态留在 WaitCode —— 用户可能想再点一次注册重发。 */
+                    show_error(err);
+                } else {
+                    show_message("验证码已发出，请查收邮箱（10 分钟内有效）".to_string()).ok();
+                }
+            } else {
+                self.huamei_code_task = Some(task);
             }
         }
         // ── 【huamei】注册/登录流程推进 ──
