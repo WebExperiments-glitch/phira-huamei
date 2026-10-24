@@ -35,7 +35,10 @@ fn thousands(n: u32) -> String {
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
         // 从右往左每 3 位插一个逗号：剩余位数是 3 的倍数时（且不是第一位）插
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        /* clippy 2026 新增 lint：manual_is_multiple_of。
+           上游原写法 `% 3 == 0`，`-D warnings` 下直接算错误。
+           替换式子是 clippy 自己给的，语义等价（取模判零 ⇔ 是否整除）。 */
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

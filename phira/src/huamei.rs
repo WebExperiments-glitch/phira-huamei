@@ -385,7 +385,7 @@ pub enum Step {
 /// 【前置邮箱校验】—— 把服务端的校验规则**原样**搬到本地，提前拦下来。
 ///
 /// 【原来的写法】这里贴的是平台云认证对一个不合法邮箱的回应。换成自建账号后服务端换了，但「提前拦下来、指出哪个字符不对」这件事不变，
-/// ```
+/// ```text
 /// {"code":"INVALID_ARGUMENT","error":"invalid_argument","error_code":3,
 ///  "error_description":"invalid SendVerificationCodeRequest.Email: value does not
 ///   match regex pattern \"^$|^[.0-9A-Za-z_-]{1,40}@[.0-9..."}
