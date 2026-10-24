@@ -18,6 +18,13 @@
 	     Cargo 构建阶段把 phira-main 拷进 bundle，这里声明它是可执行文件。
 	     ══════════════════════════════════════════════════════════════ -->
 
+		<!-- 让 App 的 Documents 出现在「文件」App 里。
+	     panic.log 写在这里：iOS 上 Rust panic 只有 SIGABRT，
+	     不这么开一个口子，用户没法把崩溃原因取出来。 -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>CFBundleExecutable</key>
 	<string>phira-main</string>
 
@@ -28,10 +35,10 @@
 	<string>6.0</string>
 
 	<key>CFBundleName</key>
-	<string>Phira</string>
-
+	<string>phira-hm</string>
+	<!-- 桌面上显示的名字。和官方 Phira 并存时，用户要能一眼分清。 -->
 	<key>CFBundleDisplayName</key>
-	<string>Phira</string>
+	<string>phira-hm</string>
 
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
