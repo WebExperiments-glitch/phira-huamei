@@ -11,10 +11,8 @@
 /// ⚠ iOS 上 `HOME` 环境变量指向 App 容器（不是 /var/mobile），
 ///   所以 `$HOME/Documents` 就是可写且可被用户访问的位置。
 ///   桌面端走同一条路径也行（HOME 是真实家目录），日志落在 ~/Documents。
-/// 依次尝试可写的日志目录，返回第一个能建出来的。
-///
-/// iOS 侧载环境下 `HOME` 可能为空（2026-11-06 实测 Documents 为空），
-/// 所以不能只依赖它；`TMPDIR` 在 iOS 上一定存在，作为兜底。
+/// 依次试可写目录：HOME/Documents → TMPDIR → 当前目录。
+/// iOS 侧载下 HOME 可能为空（2026-11-06 实测 Documents 全空），不能只依赖它。
 fn panic_log_dir() -> Option<std::path::PathBuf> {
     let mut cands: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(h) = std::env::var("HOME") {
@@ -30,8 +28,7 @@ fn panic_log_dir() -> Option<std::path::PathBuf> {
     cands.push(std::path::PathBuf::from("."));
     for d in cands {
         if std::fs::create_dir_all(&d).is_ok() {
-            let probe = d.join("panic.log");
-            if std::fs::OpenOptions::new().create(true).append(true).open(&probe).is_ok() {
+            if std::fs::OpenOptions::new().create(true).append(true).open(d.join("panic.log")).is_ok() {
                 return Some(d);
             }
         }
@@ -42,10 +39,6 @@ fn panic_log_dir() -> Option<std::path::PathBuf> {
 fn install_panic_log() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        /* 2026-11-06 实测：侧载后 `Documents` 是空的 —— 说明 `HOME` 为空时
-           这里直接走了 None 分支，一条都没写。改成按顺序试多个候选目录，
-           写进第一个能打开的；再在装 hook 时先写一条 marker，
-           以后「文件里没有 panic 段但有条 marker」就说明**写盘是通的、只是没崩**。 */
         let dir = panic_log_dir();
         let text = format!(
             "=== {} ===
@@ -70,25 +63,7 @@ fn install_panic_log() {
         }
         // 原 hook 照旧（stderr），别把原有行为吃掉
         prev(info);
-    }
-
-    /* 装完立刻写一条 marker：以后 "文件里只有 marker 没有 panic 段"
-       = 写盘通、只是没崩；"连 marker 都没有" = 路径或权限问题。
-       两个环境变量原样记下来，省得再靠猜。 */
-    if let Some(d) = panic_log_dir() {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(d.join("panic.log")) {
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0);
-            let _ = writeln!(
-                f,
-                "=== {ts} hook installed · dir={} · HOME={} · TMPDIR={} ===",
-                d.display(),
-                std::env::var("HOME").unwrap_or_else(|_| "<unset>".into()),
-                std::env::var("TMPDIR").unwrap_or_else(|_| "<unset>".into()),
-            );
-        }
-    }
-));
+    }));
 }
 
 fn main() {
