@@ -74,7 +74,12 @@ zip = { version = "8.3.0", default-features = false }
 
 [profile.release]
 opt-level = 2
-strip = true
+# 保留符号表：iOS 的 .ips 崩溃报告靠**App 二进制自身的符号**来显示函数名，
+# 不靠 dSYM（侧载 IPA 没有 dSYM 一起装）。strip = true 时帧只剩地址，
+# 2026-11-06 那次 SIGABRT 就是这样，完全定位不到行。
+strip = "none"
+# 行号表：崩溃帧能直接给出 file:line。体积增加约 2~3 MB，值得。
+debug = 1
 
 [profile.dev.package."*"]
 opt-level = 2
