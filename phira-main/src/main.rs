@@ -20,6 +20,11 @@ fn panic_log_dir() -> Option<std::path::PathBuf> {
             cands.push(std::path::PathBuf::from(h).join("Documents"));
         }
     }
+    if let Ok(h) = std::env::var("HOME") {
+        if !h.is_empty() {
+            cands.push(std::path::PathBuf::from(h).join("Library").join("Caches"));
+        }
+    }
     if let Ok(t) = std::env::var("TMPDIR") {
         if !t.is_empty() {
             cands.push(std::path::PathBuf::from(t));
@@ -58,12 +63,26 @@ fn install_panic_log() {
                 .open(d.join("panic.log"))
             {
                 let _ = f.write_all(text.as_bytes());
+                // ⚠ 崩溃发生在 GLKView 的 C 回调里，panic 后进程立刻 abort，
+                // 没有机会 flush；必须显式同步到磁盘。
+                let _ = f.sync_all();
                 let _ = f.flush();
             }
         }
         // 原 hook 照旧（stderr），别把原有行为吃掉
         prev(info);
     }));
+
+    // 装完立刻写一行：区分「没启动」和「启动了没崩」。
+    // 上一版没有这行，导致 Documents 为空时无法判断是哪一种。
+    if let Some(d) = panic_log_dir() {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(d.join("panic.log")) {
+            use std::io::Write;
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0);
+            let _ = writeln!(f, "=== {ts} hook installed · dir={} ===", d.display());
+            let _ = f.sync_all();
+        }
+    }
 }
 
 fn main() {
