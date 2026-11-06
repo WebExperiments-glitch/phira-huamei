@@ -1065,7 +1065,13 @@ impl SongScene {
             };
             // 没登录就不建发送器 —— 这样结算页不会因为我们没上传而弹错误框。
             // （`EndingScene` 用 `upload_fn.and_then(record_data)` 决定要不要发。）
-            let upload_fn: Option<UploadFn> = if crate::huamei::current_token().is_some() {
+            //
+            // 【2026-11-06】原来只认 huamei 账号（`current_token()`），结果是
+            // **真实上传量为 0**：huamei 账号是我们自建的邮箱体系，玩家只有
+            // Phira 账号，没人会为此专门注册。改成「huamei 账号 **或** Phira 已登录」
+            // 任一存在就上报；服务端拿 `x-phira-token` 去调 Phira `/me` 验身份。
+            let upload_fn: Option<UploadFn> =
+                if crate::huamei::current_token().is_some() || get_data().me.is_some() {
                 Some(Arc::new(move |data: Vec<u8>| {
                     let digest = huamei_digest.clone();
                     Task::new(async move {

@@ -636,8 +636,18 @@ pub fn validate_password(pw: &str) -> std::result::Result<(), String> {
 }
 
 pub async fn upload_play(payload_json: &[u8], chart_digest: Option<String>) -> Result<UploadResp> {
-    let Some(token) = current_token() else {
-        bail!("未登录 huamei 账号");
+    /* 2026-11-06：原来只认 huamei 账号，导致真实上传量为 0 ——
+       huamei 账号是自建邮箱体系，玩家只有 Phira 账号。
+       改成「huamei 优先，没有就用 Phira 会话」；服务端拿这个 token
+       先试 huamei，失败再当 Phira token 调 /me 验证（见 lib/hm.mjs phiraFallback）。 */
+    let token = match current_token() {
+        Some(t) => t,
+        None => get_data()
+            .tokens
+            .as_ref()
+            .map(|it| it.0.clone())
+            .filter(|it| !it.is_empty())
+            .context("未登录：huamei 账号与 Phira 账号都没有")?,
     };
     let p: HuameiPayload =
         serde_json::from_slice(payload_json).context("prpr 给的对局载荷解析失败")?;
