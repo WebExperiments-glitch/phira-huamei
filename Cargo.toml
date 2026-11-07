@@ -83,3 +83,8 @@ debug = 1
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# 本地 patch：给 iOS 的 draw_in_rect 加 catch_unwind，把 panic 写进沙盒文件。
+# 上游版本 panic 穿出 extern "C" 边界直接 abort，崩溃原因完全不可见。
+[patch."https://github.com/Mivik/prpr-miniquad"]
+miniquad = { path = "vendor/prpr-miniquad" }
