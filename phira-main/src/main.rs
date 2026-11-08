@@ -41,47 +41,60 @@ fn panic_log_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+fn log_line(text: &str) {
+    if let Some(d) = panic_log_dir() {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(d.join("panic.log"))
+        {
+            let _ = f.write_all(text.as_bytes());
+            // ⚠ 崩溃路径上进程随时会死，写而不 flush 等于没写
+            let _ = f.sync_all();
+            let _ = f.flush();
+        }
+    }
+}
+
 fn install_panic_log() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let dir = panic_log_dir();
-        let text = format!(
-            "=== {} ===
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        log_line(&format!("=== {ts} PANIC ===
 {info}
 
-",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
-        );
-        if let Some(d) = dir {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(d.join("panic.log"))
-            {
-                let _ = f.write_all(text.as_bytes());
-                // ⚠ 崩溃发生在 GLKView 的 C 回调里，panic 后进程立刻 abort，
-                // 没有机会 flush；必须显式同步到磁盘。
-                let _ = f.sync_all();
-                let _ = f.flush();
-            }
-        }
+"));
         // 原 hook 照旧（stderr），别把原有行为吃掉
         prev(info);
     }));
 
     // 装完立刻写一行：区分「没启动」和「启动了没崩」。
     // 上一版没有这行，导致 Documents 为空时无法判断是哪一种。
-    if let Some(d) = panic_log_dir() {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(d.join("panic.log")) {
-            use std::io::Write;
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0);
-            let _ = writeln!(f, "=== {ts} hook installed · dir={} ===", d.display());
-            let _ = f.sync_all();
-        }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|x| x.as_secs())
+        .unwrap_or(0);
+    log_line(&format!(
+        "=== {ts} hook installed · dir={} ===
+",
+        panic_log_dir().map(|d| d.display().to_string()).unwrap_or_else(|| "<none>".into())
+    ));
+}
+
+/// 把 panic payload 取成人话。
+/// `catch_unwind` 拿到的是 `Box<dyn Any>`，常见是 `&str` 或 `String`；
+/// 拿不到就退回一句说明——总比空着强。
+fn panic_payload_text(e: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = e.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = e.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<非字符串 payload>".to_string()
     }
 }
 
@@ -95,5 +108,22 @@ fn main() {
             break;
         }
     }
-    phira::quad_main();
+    // ── 关键：拦住 panic，不让它冲过 FFI 边界 ──
+    // iOS 上这个 main 是由 ObjC 侧调进来的。Rust 的 panic 一旦越过
+    // `extern "C"` 边界，标准库会直接 abort（崩溃报告里就是
+    // `panic_cannot_unwind` → `abort`），hook 里的消息虽然写了盘，
+    // 但进程当场死，读者只能看到"闪退"。
+    // 包一层 catch_unwind 后：panic 被这里接住 → 写清原因 → 正常退出。
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| phira::quad_main()));
+
+    if let Err(e) = result {
+        let msg = panic_payload_text(&e);
+        log_line(&format!("=== CAUGHT (未 abort) ===
+{msg}
+
+"));
+        eprintln!("[phira] panic caught: {msg}");
+        // 给磁盘一点时间；然后干净退出，别留一个半死的进程
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
 }
