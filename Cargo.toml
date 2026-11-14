@@ -16,7 +16,7 @@ resolver = "2"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(closed)'] }
 
 [workspace.package]
-version = "0.8.2-beta.3"
+version = "0.8.2-beta.4"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -88,3 +88,9 @@ opt-level = 2
 # 上游版本 panic 穿出 extern "C" 边界直接 abort，崩溃原因完全不可见。
 [patch."https://github.com/Mivik/prpr-miniquad"]
 miniquad = { path = "vendor/prpr-miniquad" }
+
+# 本地 patch：macroquad 的 GPU 计时查询在「上一次没结束时」直接 assert，
+# 而渲染中途 panic 必然让 end_gpu_query 被跳过 —— 于是每帧 panic 一次、
+# 画面冻结（实机 1088 条重复日志）。改成容错跳过。见 vendor/prpr-macroquad/src/telemetry.rs。
+[patch."https://github.com/Mivik/prpr-macroquad"]
+macroquad = { path = "vendor/prpr-macroquad" }
