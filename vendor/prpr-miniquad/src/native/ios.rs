@@ -200,8 +200,23 @@ pub fn define_glk_view_dlg() -> *const Class {
         let _ = writeln!(f, "--- message ---");
         let _ = writeln!(f, "{}", msg);
         let _ = writeln!(f, "--- backtrace ---");
-        let bt = std::backtrace::Backtrace::force_capture();
-        let _ = writeln!(f, "{}", bt);
+        /* ⚠ 不要只 writeln!("{}", bt)。
+           iOS 上 Backtrace 的符号化靠 dladdr，而 Rust 代码是静态链接进
+           phira-main 的，那些符号不在动态符号表里 —— Display 只能吐 <unknown>，
+           连地址都不给。实测 beta.4 的 454 条 panic，backtrace 全是 <unknown>。
+           改用 frames() 把 ip 原样写出来，回去用 atosl 离线符号化。 */
+        /* ⚠ 用 backtrace crate 而不是 std::backtrace：
+           std 的 frames() 是 unstable（要 backtrace_frames feature gate），
+           而这个 crate 是 stable 且能拿到原始 ip。
+           iOS 上符号化不了（静态链接，dladdr 看不到），所以这里只写地址，
+           回去用 atosl 离线转 file:line。 */
+        let mut n = 0usize;
+        backtrace::trace(|frame| {
+            let _ = writeln!(f, "  #{:<2} 0x{:016x}", n, frame.ip() as usize);
+            n += 1;
+            true
+        });
+        }
         let _ = writeln!(f, "==========================================");
     }
 

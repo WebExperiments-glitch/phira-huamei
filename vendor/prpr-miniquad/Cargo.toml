@@ -52,6 +52,10 @@ quad-rand = "0.1"
 
 [dependencies]
 jni = "0.21.1"
+# iOS 的崩溃日志要拿原始返回地址做离线符号化。std::backtrace 在静态链接的
+# iOS 二进制里解析不到符号（只能吐 <unknown>），但它的 frames() 是 unstable，
+# 所以单独用这个 crate。2026-11-14。
+backtrace = "0.3"
 
 [target.'cfg(target_env = "ohos")'.dependencies]
 ohos-xcomponent-binding = "0.3"

@@ -19,6 +19,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
+name = "addr2line"
+version = "0.27.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e567177890eb1617b1f774005b66b26b2377afd138a2ca37aae7d8f0c81429d4"
+dependencies = [
+ "gimli",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -302,6 +311,21 @@ dependencies = [
  "cmake",
  "dunce",
  "fs_extra",
+]
+
+[[package]]
+name = "backtrace"
+version = "0.3.77"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42f4220217f3288537b83684130f42fad43320b1c3b805f1910d683d52ded24f"
+dependencies = [
+ "addr2line",
+ "cfg-if",
+ "libc",
+ "miniz_oxide 0.9.1",
+ "object",
+ "rustc-demangle",
+ "windows-link",
 ]
 
 [[package]]
@@ -1309,6 +1333,12 @@ dependencies = [
  "color_quant",
  "weezl",
 ]
+
+[[package]]
+name = "gimli"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1033caf0b349c518623b5396bfb2cf0bddf44f0306d543a250e5743297aafd10"
 
 [[package]]
 name = "glam"
@@ -2421,6 +2451,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 name = "miniquad"
 version = "0.3.15"
 dependencies = [
+ "backtrace",
  "hms-opengtx-binding",
  "jni 0.21.1",
  "keyboard-types",
@@ -3009,6 +3040,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "oboe"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3469,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "phira"
-version = "0.8.2-beta.4"
+version = "0.8.2-beta.5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3536,7 +3576,7 @@ dependencies = [
 
 [[package]]
 name = "phira-main"
-version = "0.8.2-beta.4"
+version = "0.8.2-beta.5"
 dependencies = [
  "phira",
 ]
@@ -3748,7 +3788,7 @@ dependencies = [
 
 [[package]]
 name = "prpr"
-version = "0.8.2-beta.4"
+version = "0.8.2-beta.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3819,7 +3859,7 @@ dependencies = [
 
 [[package]]
 name = "prpr-auto-offset"
-version = "0.8.2-beta.4"
+version = "0.8.2-beta.5"
 dependencies = [
  "prpr-avc",
  "rayon",
@@ -3829,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "prpr-auto-offset-cli"
-version = "0.8.2-beta.4"
+version = "0.8.2-beta.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -4290,6 +4330,12 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
 ]
+
+[[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
 name = "rustc-hash"
