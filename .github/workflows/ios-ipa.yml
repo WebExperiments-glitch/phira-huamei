@@ -86,7 +86,7 @@ jobs:
         # 它被 vendor/prpr-miniquad/src/native/ios.rs 的 option_env! 读走，
         # 写进 panic.log —— 崩溃时一眼看出是哪个版本崩的。
         env:
-          PHM_APP_VERSION: "0.8.2-beta.4"
+          PHM_APP_VERSION: "0.8.2-beta.5"
           PHM_GIT_HASH: ${{ github.sha }}
           PHM_BUILD_STD: "ci-macos"
         run: |

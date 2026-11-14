@@ -512,9 +512,17 @@ where
 {
     RUN_ARGS = Some((Box::new(f), conf));
 
-    std::panic::set_hook(Box::new(|info| {
+    /* ⚠ 必须链式调用上一个 hook。
+       原来这里直接 set_hook，把 phira-main 在 main() 里装的 panic 日志
+       hook 顶掉了 —— 于是 Documents/panic.log 里只有 hook installed、
+       一条 PANIC 都没有，而我们真正需要的 panicked at file:line 就在
+       info 的 Display 里。实测 beta.4 的 454 条 panic 全无 location。
+       2026-11-14。 */
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
         let nsstring = apple_util::str_to_nsstring(&format!("{:?}", info));
         let _: () = frameworks::NSLog(nsstring);
+        prev_hook(info);
     }));
 
     let argc = 1;
