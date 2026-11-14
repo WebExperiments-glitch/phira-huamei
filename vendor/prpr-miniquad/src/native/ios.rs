@@ -258,13 +258,20 @@ pub fn define_glk_view_dlg() -> *const Class {
     fn draw_in_rect_inner(this: &Object, _: Sel, _: ObjcId, _: ObjcId) {
         let payload = get_window_payload(this);
         if payload.event_handler.is_none() {
-            let f = payload.f.take().unwrap();
+            /* ⚠ 这里原本是两个 unwrap，会在初始化失败后每帧 panic 一次。
+               场景：GraphicsContext::new 或 f(...) 中途 panic → f 已被 take 走、
+               event_handler 却没设上 → 之后每帧都拿 None 去 unwrap → 画面永久冻结
+               （实测 1361 条 panic，全是这个）。初始化失败就降级：跳过这一帧。 */
+            let Some(f) = payload.f.take() else {
+                /* f 已是 None：上一次初始化失败过，不再重试，也不再 panic */
+                return;
+            };
             payload.context = Some(GraphicsContext::new(payload.gles2));
-            payload.event_handler = Some(f(payload
-                .context
-                .as_mut()
-                .unwrap()
-                .with_display(&mut payload.display)));
+            let ctx = match payload.context.as_mut() {
+                Some(c) => c,
+                None => return,
+            };
+            payload.event_handler = Some(f(ctx.with_display(&mut payload.display)));
         }
 
         let main_screen: ObjcId = unsafe { msg_send![class!(UIScreen), mainScreen] };
