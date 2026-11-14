@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::judge::{Judge, Judgement, PlayResult};
 
 /// 判定数据格式版本。改编码必须 +1（服务端按这个字段选解析器）。
-pub const JUDGE_VER: u8 = 1;
+pub const JUDGE_VER: u8 = 2;   /* 2 = 加入 max_touch_points（2026-11-14） */
 
 /// 紧凑记录里的判定码
 pub mod judge_code {
@@ -72,6 +72,12 @@ pub struct HuameiPayload {
     pub mods: i32,
     /// 是否开着键盘模式。不拒收（桌面端键盘是正当玩法），但服务端可以据此分层。
     pub keyboard: bool,
+
+    /// 本局最大同时触点数。0 = 键盘模式或旧客户端；1 = 单指；2~4 = 双指/多指。
+    /// ⚠ 行为特征，不是成绩 —— 同样 100 万分的两个人，指法结构可能完全不同。
+    /// serde(default) 让 judge_ver=1 的历史数据仍能反序列化。
+    #[serde(default)]
+    pub max_touch_points: u8,
 
     /// 结算时刻，Unix 毫秒
     pub played_at: i64,
@@ -166,6 +172,7 @@ pub fn build_payload(
         speed,
         mods,
         keyboard,
+        max_touch_points: if keyboard { 0 } else { result.max_touch.min(255) as u8 },
         played_at: chrono::Utc::now().timestamp_millis(),
         judge: STANDARD.encode(&judge_bytes),
     }
@@ -194,7 +201,7 @@ mod tests {
         assert_eq!(judge_code::BAD, 2);
         assert_eq!(judge_code::MISS, 3);
         assert_eq!(judge_code::HOLD_PRESS, 4);
-        assert_eq!(JUDGE_VER, 1);
+        assert_eq!(JUDGE_VER, 2);
         assert_eq!(RECORD_SIZE, 8);
     }
 }

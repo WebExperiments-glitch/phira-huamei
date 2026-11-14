@@ -162,6 +162,12 @@ pub(crate) struct JudgeInner {
     num_of_notes: u32,
     early_kind: [u32; 4],
     late_kind: [u32; 4],
+
+    /// 本局出现过的**最大同时触点数**。
+    /// 用来区分「双指流」和「多指分片」——同样 100 万分的两个人，
+    /// 指法结构可能完全不同，这是判定数据给不出的信息。
+    /// 每帧在 Judge::update 里更新（取 events.len() 的峰值）。
+    max_touch: u32,
 }
 
 #[cfg(not(closed))]
@@ -176,6 +182,7 @@ impl JudgeInner {
             num_of_notes,
             early_kind: [0; 4],
             late_kind: [0; 4],
+            max_touch: 0,
         }
     }
 
@@ -269,6 +276,7 @@ impl JudgeInner {
             std,
             early_kind: self.early_kind,
             late_kind: self.late_kind,
+            max_touch: self.max_touch,
         }
     }
 
@@ -512,6 +520,11 @@ impl Judge {
                 (events, 0, 0)
             }
         });
+          /* 本帧触点数取峰值。键盘模式不算 —— 键盘是 0 个触点，
+             混进来会把「四指玩家」拉低。 */
+          if !res.config.use_keyboard && !events.is_empty() {
+              self.inner.max_touch = self.inner.max_touch.max(events.len() as u32);
+          }
         self.key_down_count = self.key_down_count.saturating_add_signed(key_delta);
         {
             fn to_local(Vec2 { x, y }: Vec2) -> Point {
@@ -1074,6 +1087,8 @@ pub struct PlayResult {
     pub std: f32,
     pub early_kind: [u32; 4],
     pub late_kind: [u32; 4],
+    /// 本局最大同时触点数（键盘模式为 0）。见 JudgeInner::max_touch。
+    pub max_touch: u32,
 }
 
 pub fn icon_index(score: u32, full_combo: bool) -> usize {
