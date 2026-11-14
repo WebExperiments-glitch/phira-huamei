@@ -172,6 +172,39 @@ pub fn define_glk_view_dlg() -> *const Class {
 
     /// 把 panic 写进沙盒文件：这个回调是 extern "C"，panic 一旦穿出就 abort，
     /// 消息和栈全部丢失（2026-11-06 连崩三把，.ips 里只有一句 abort() called）。
+    /// 把一次 panic 写成可读报告。
+    ///
+    /// 【为什么写这么多】
+    ///   iOS 的 .ips 只给「SIGABRT / abort() called」，Rust 的 panic 消息和真正的
+    ///   调用栈全丢 —— panic 跨 FFI 边界时直接 abort，没有落脚点。这个文件是唯一
+    ///   的现场：谁崩的、崩在哪一行、当时是什么版本。
+    ///
+    /// 【版本号怎么来的】
+    ///   PHM_APP_VERSION 由 CI 编译时注入（见 .github/workflows/ios-ipa.yml）。
+    ///   用 option_env! 而不是 env! —— 本地 cargo build 没这个变量，env! 会编译失败。
+    fn write_panic_report(f: &mut std::fs::File, msg: &str) {
+        use std::io::Write;
+
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let _ = writeln!(f, "");
+        let _ = writeln!(f, "========== draw_in_rect panic ==========");
+        let _ = writeln!(f, "app_version : {}", option_env!("PHM_APP_VERSION").unwrap_or("unknown"));
+        let _ = writeln!(f, "git_commit  : {}", option_env!("PHM_GIT_HASH").unwrap_or("unknown"));
+        let _ = writeln!(f, "build_std   : {}", option_env!("PHM_BUILD_STD").unwrap_or("unknown"));
+        let _ = writeln!(f, "unix_time   : {}", secs);
+        let _ = writeln!(f, "thread      : {}", std::thread::current().name().unwrap_or("<unnamed>"));
+        let _ = writeln!(f, "--- message ---");
+        let _ = writeln!(f, "{}", msg);
+        let _ = writeln!(f, "--- backtrace ---");
+        let bt = std::backtrace::Backtrace::force_capture();
+        let _ = writeln!(f, "{}", bt);
+        let _ = writeln!(f, "==========================================");
+    }
+
     fn log_draw_panic(msg: &str) {
         use std::io::Write;
         let mut cands: Vec<std::path::PathBuf> = Vec::new();
@@ -192,9 +225,7 @@ pub fn define_glk_view_dlg() -> *const Class {
                 continue;
             }
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(d.join("panic.log")) {
-                let _ = writeln!(f, "=== draw_in_rect panic ===
-{msg}
-");
+                write_panic_report(&mut f, msg);
                 let _ = f.sync_all();
                 return;
             }

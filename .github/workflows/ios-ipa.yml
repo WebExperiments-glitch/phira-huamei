@@ -82,6 +82,13 @@ jobs:
       #    "xcodebuild: error: The project ... does not contain a scheme"。
       #    CODE_SIGNING_ALLOWED=NO + 空 identity/team → 无签名。
       - name: xcodebuild（无签名）
+        # PHM_APP_VERSION 必须与 Cargo.toml 的 version 一致。
+        # 它被 vendor/prpr-miniquad/src/native/ios.rs 的 option_env! 读走，
+        # 写进 panic.log —— 崩溃时一眼看出是哪个版本崩的。
+        env:
+          PHM_APP_VERSION: "0.8.2-beta.1"
+          PHM_GIT_HASH: ${{ github.sha }}
+          PHM_BUILD_STD: "ci-macos"
         run: |
           set -euo pipefail
           xcodebuild \
@@ -89,6 +96,7 @@ jobs:
             -target phira \
             -configuration Release \
             -sdk iphoneos \
+            MARKETING_VERSION=0.8.2 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
