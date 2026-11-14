@@ -248,7 +248,14 @@ pub fn define_glk_view_dlg() -> *const Class {
         }
     }
 
-    extern "C" fn draw_in_rect_inner(this: &Object, _: Sel, _: ObjcId, _: ObjcId) {
+    /* ⚠⚠ 这里**不能**是 extern "C"。
+       它只被 draw_in_rect 调用，是纯内部函数，不需要 C ABI。
+       而只要它带 extern "C"，函数体内 panic 的第一时间 Rust 就判定
+       「不能跨 C 边界展开」→ 直接 panic_cannot_unwind → abort，
+       外层 draw_in_rect 里的 catch_unwind **完全来不及接管**。
+       这就是 2026-11-14 那个 SIGABRT 的真正根因：
+       catch_unwind 明明编进去了（符号都在），却一次都没生效过。 */
+    fn draw_in_rect_inner(this: &Object, _: Sel, _: ObjcId, _: ObjcId) {
         let payload = get_window_payload(this);
         if payload.event_handler.is_none() {
             let f = payload.f.take().unwrap();
