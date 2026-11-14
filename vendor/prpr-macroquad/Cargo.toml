@@ -1,0 +1,53 @@
+[package]
+name = "macroquad"
+version = "0.3.25"
+authors = ["not-fl3 <not.fl3@gmail.com>"]
+edition = "2018"
+license = "MIT/Apache-2.0"
+homepage = "https://github.com/not-fl3/macroquad"
+repository = "https://github.com/not-fl3/macroquad"
+description = """
+Simple and easy to use graphics library
+"""
+readme="README.md"
+
+[target.'cfg(not(target_env = "ohos"))'.features]
+audio = ["quad-snd"]
+log-rs = ["log"]
+default = ["audio"]
+
+[package.metadata.android]
+assets = "examples/"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+# miniquad = { version = "=0.3.14", features = ["log-impl"] }
+miniquad = { git = "https://github.com/Mivik/prpr-miniquad.git", rev = "138679c", features = ["log-impl"] }
+quad-rand = "0.2.3"
+glam = {version = "0.30", features = ["scalar-math"] }
+image = { version = "0.25", default-features = false, features = ["png", "tga"] }
+macroquad_macro = { version = "0.1.7", path = "macroquad_macro" }
+fontdue = "0.9"
+bumpalo = "3.18"
+log = { version = "0.4", optional = true }
+quad-snd = { version = "0.2", optional = true }
+
+[dev-dependencies]
+macroquad-particles = { path = "./particles" }
+macroquad-tiled = { path = "./tiled" }
+macroquad-profiler = { path = "./profiler" }
+macroquad-platformer = { path = "./physics-platformer" }
+
+# workaround to fix the examples
+# this allows to use macroquad-particles in examples without two versions of macroquad
+[patch.crates-io]
+macroquad = { path = './' }
+#quad-snd = {path = '../quad-snd'}
+
+#miniquad = { path = '../miniquad' }
+#quad-gl = {path = './quad-gl'}
