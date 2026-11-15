@@ -73,18 +73,15 @@ impl Sampler {
     }
 }
 
-/// 启动陀螺仪。幂等 —— 重复调用不会创建第二个 manager。
+/// 【已废弃 2026-11-15】不要在启动时调 —— 保留函数只为兼容旧调用点。
+///
+/// ⚠ 真机实测：在 quad_main（Window 创建之前）调 startDeviceMotionUpdates
+///   会**静默失效** —— 那时 run loop 还没跑起来，CoreMotion 的更新不会发生，
+///   deviceMotion() 恒为 None。表现就是 gyro 一直是 null。
+///
+///   现在改成**懒启动**：第一次 sample_frame 时才启动，那时游戏循环已经在跑。
 pub fn start() {
-    #[cfg(target_os = "ios")]
-    {
-        if !AVAILABLE.load(Ordering::Relaxed) {
-            let ok = unsafe { imp::start_updates() };
-            AVAILABLE.store(ok, Ordering::Relaxed);
-            if !ok {
-                tracing::warn!("motion: deviceMotion 启动失败（无陀螺仪或权限），陀螺仪数据将为空");
-            }
-        }
-    }
+    /* 什么都不做，真正的启动在 sample_frame 里。 */
 }
 
 /// 对局开始时调用：清空上一局的样本。
@@ -96,7 +93,22 @@ pub fn begin_round() {
 
 /// 每帧调用一次。内部会判断是否可以采（未 begin / 不可用都会直接返回）。
 pub fn sample_frame() {
+    /* 懒启动：第一次采样时才开始更新。
+       此时游戏循环已经在跑，run loop 是活的 —— 这是 CoreMotion 能工作的前提。
+       在 Window 创建之前调 startDeviceMotionUpdates 会静默失效（实测）。 */
     if !AVAILABLE.load(Ordering::Relaxed) {
+        #[cfg(target_os = "ios")]
+        {
+            let ok = unsafe { imp::start_updates() };
+            AVAILABLE.store(ok, Ordering::Relaxed);
+            if ok {
+                tracing::info!("motion: deviceMotion 已启动（懒启动，首次采样时）");
+            } else {
+                tracing::warn!("motion: deviceMotion 启动失败（isDeviceMotionAvailable=false）");
+            }
+        }
+        #[cfg(not(target_os = "ios"))]
+        AVAILABLE.store(false, Ordering::Relaxed);
         return;
     }
     #[cfg(target_os = "ios")]
@@ -139,6 +151,7 @@ mod imp {
             if !mgr.isDeviceMotionAvailable() {
                 return false;
             }
+            tracing::info!("motion: isDeviceMotionAvailable=true，开始 startDeviceMotionUpdates");
             mgr.setDeviceMotionUpdateInterval(1.0 / 60.0);
             mgr.startDeviceMotionUpdates();
             *cell.borrow_mut() = Some(mgr);
