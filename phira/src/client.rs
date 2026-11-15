@@ -509,7 +509,13 @@ impl Client {
     /// ~9 KB body is never downloaded — change detection relies solely on the
     /// `Last-Modified` header.
     pub async fn fetch_terms(modified: Option<&str>) -> Result<Option<String>> {
-        let mut req = CLIENT.load().head(format!("{API_URL}/terms/{}.txt", client_locale()));
+        /* ⚠ 必须带 sharecode：平台设「需要分享码」后裸访问 403。
+           实测报错：failed to fetch terms: 403 —— 用户看到的是
+           「获取服务条款和隐私政策内容失败」，卡在谱面库进不去。
+           这条走的是 head()，不经过 Client::request，所以上一版漏了。 */
+        let mut req = CLIENT
+            .load()
+            .head(with_sharecode(&format!("{API_URL}/terms/{}.txt", client_locale())));
         if let Some(modified) = modified {
             req = req.header(header::IF_MODIFIED_SINCE, header::HeaderValue::from_str(modified)?);
         }
