@@ -88,9 +88,50 @@ impl TimeManager {
     }
 
     pub fn update(&mut self, music_time: f64) {
-        if self.adjust_time && self.real_time() > self.wait && self.pause_time.is_none() {
-            self.start_time -= (music_time - self.now()) * self.force;
+        if !self.adjust_time || self.real_time() <= self.wait || self.pause_time.is_some() {
+            return;
         }
+
+        /* ── 自动对齐：必须限幅，否则一次异常能把时钟推反 ──
+         *
+         * 【为什么】
+         *   `start_time -= (music_time - now()) * force` 本身没问题 ——
+         *   force 只有 3e-3，每帧只挪一点点，看起来温和。
+         *
+         *   但 music_time 来自音频后端（`self.music.position()`）。打歌中
+         *   退出再回来、按下音量键、音频会话被系统中断 —— 这些情况下
+         *   position() 可能返回 0、负数、或者跳回几秒前。
+         *
+         *   一旦 music_time 突然变负，diff 变成大负数，
+         *   start_time 被推**正向**，于是 now() 开始递减：
+         *     · 倒计时不再走 3,2,1，而是往上数 3,4,5…
+         *     · 谱面时间倒退，音符倒着飞（2026-11-15 实机复现）
+         *
+         * 【修法】分三档：
+         *   · |diff| < 0.08   忽略（正常抖动，不值得追）
+         *   · |diff| < 0.5    温和追（原来的行为）
+         *   · |diff| >= 0.5   认为音频时间不可信，**不动时钟**
+         *                     —— 宁可音画不同步，也不能让时间倒流。
+         *                        不同步是可以听出来的、可恢复的；时间倒流
+         *                        会让整个判定系统进入不可恢复的错乱。
+         *
+         *   ⚠ music_time 非有限值（NaN / inf）同样跳过 —— 那说明音频后端
+         *     已经给出垃圾数据，此刻任何数值运算都会污染 start_time。 */
+        if !music_time.is_finite() {
+            tracing::warn!("time: music_time 非有限值（{}），跳过自动对齐", music_time);
+            return;
+        }
+        let diff = music_time - self.now();
+        if !diff.is_finite() || diff.abs() < 0.08 {
+            return;
+        }
+        if diff.abs() >= 0.5 {
+            tracing::warn!(
+                "time: 音频时间偏差 {}s 超过阈值，跳过自动对齐（不追，避免时间倒流）", diff
+            );
+            return;
+        }
+        self.start_time -= diff * self.force;
     }
 
     #[must_use]
