@@ -520,10 +520,25 @@ impl Judge {
                 (events, 0, 0)
             }
         });
-          /* 本帧触点数取峰值。键盘模式不算 —— 键盘是 0 个触点，
-             混进来会把「四指玩家」拉低。 */
+          /* 本帧**同时按下的手指数**取峰值（不只是事件数）。
+           *
+           * 【2026-11-15 修】原来写的是 `events.len()` —— 那是「本帧的
+           *   触点**事件**数」，不是手指数。同一个手指一帧内会有多个
+           *   事件（按下 + 移动），而 events 是整帧累积的，于是打一局
+           *   下来 max 会飙到 23（iPad 最多 10 指，实测最高 5）。
+           *
+           *   正确做法：按 id 去重，并排除已经 Ended 的手指。
+           *   Ended 事件还在 events 里（那是本帧结束的），但它已经不算
+           *   「同时按下」了。
+           *
+           * 键盘模式不算 —— 键盘是 0 个触点，混进来会把四指玩家拉低。 */
           if !res.config.use_keyboard && !events.is_empty() {
-              self.inner.max_touch = self.inner.max_touch.max(events.len() as u32);
+              let active: std::collections::HashSet<u64> = events
+                  .iter()
+                  .filter(|t| t.phase != TouchPhase::Ended)
+                  .map(|t| t.id)
+                  .collect();
+              self.inner.max_touch = self.inner.max_touch.max(active.len() as u32);
           }
         self.key_down_count = self.key_down_count.saturating_add_signed(key_delta);
         {
