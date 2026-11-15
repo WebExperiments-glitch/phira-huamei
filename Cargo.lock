@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "phira"
-version = "0.8.2-beta.14"
+version = "0.8.2-beta.16"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3532,6 +3532,7 @@ dependencies = [
  "image",
  "inputbox",
  "jni 0.22.4",
+ "libc",
  "logos",
  "lru",
  "lyon",
@@ -3576,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "phira-main"
-version = "0.8.2-beta.14"
+version = "0.8.2-beta.16"
 dependencies = [
  "phira",
 ]
@@ -3788,7 +3789,7 @@ dependencies = [
 
 [[package]]
 name = "prpr"
-version = "0.8.2-beta.14"
+version = "0.8.2-beta.16"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3859,7 +3860,7 @@ dependencies = [
 
 [[package]]
 name = "prpr-auto-offset"
-version = "0.8.2-beta.14"
+version = "0.8.2-beta.16"
 dependencies = [
  "prpr-avc",
  "rayon",
@@ -3869,7 +3870,7 @@ dependencies = [
 
 [[package]]
 name = "prpr-auto-offset-cli"
-version = "0.8.2-beta.14"
+version = "0.8.2-beta.16"
 dependencies = [
  "anyhow",
  "clap",

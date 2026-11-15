@@ -36,7 +36,18 @@ pub fn install() -> &'static str {
            现阶段主要看移动端。 */
     }
 
+    /* ⚠ 必须打日志。2026-11-15 第一版 device.rs 上线后，服务端收到的
+       device 全是 null —— 但「采集失败」和「采集成功但字段没填」在
+       上报载荷里长得一模一样（都是 {}），完全没法区分。
+       这里把三件事都记下来：拿到几个字段、具体值、是否写入全局。 */
     let has = info.os_version.is_some() || info.model.is_some() || info.screen.is_some();
+    tracing::info!(
+        "device: os={:?} model={:?} screen={:?} -> {}",
+        info.os_version,
+        info.model,
+        info.screen,
+        if has { "collected" } else { "empty" }
+    );
     prpr::huamei::set_device_info(info);
     if has { "collected" } else { "empty" }
 }
@@ -55,6 +66,7 @@ unsafe fn fill_ios(info: &mut DeviceInfo) {
        device::install() 由 quad_main 调用，本来就在主线程，所以这里必然成功。
        拿不到只能是调用方写错了，此时直接放弃采集，不影响游戏启动。 */
     let Some(mtm) = MainThreadMarker::new() else {
+        tracing::warn!("device: 拿不到 MainThreadMarker，跳过采集");
         return;
     };
 
