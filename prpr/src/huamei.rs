@@ -124,6 +124,52 @@ pub fn sample_motion() {
     f();
 }
 
+/* ── 安全区钩子 ──────────────────────────────────────────────
+   iPhone Duo（2026-09）的内屏横屏与外屏会把状态栏挪成**一侧的竖条**
+   （约 84pt，放时钟/信号），刘海机横屏同理，而且左右**不对称**。
+   平台层（miniquad）已经把它读出来了，prpr 不认识 UIKit，
+   所以照旧用函数指针转一手：phira 注册取值的实现。
+
+   取不到时返回全 0 —— 桌面端、非 iOS、老系统都是这条路。 */
+type SafeAreaHook = fn() -> (f32, f32, f32, f32);
+static SAFE_AREA_HOOK: std::sync::atomic::AtomicPtr<()> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+pub fn set_safe_area_hook(f: SafeAreaHook) {
+    SAFE_AREA_HOOK.store(f as *mut (), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 当前安全区（上, 左, 下, 右），单位像素。未注册或取不到时全 0。
+pub fn safe_area() -> (f32, f32, f32, f32) {
+    let p = SAFE_AREA_HOOK.load(std::sync::atomic::Ordering::Relaxed);
+    if p.is_null() {
+        return (0., 0., 0., 0.);
+    }
+    // SAFETY: 只接受 set_safe_area_hook 注册的函数指针，类型一致。
+    let f: SafeAreaHook = unsafe { std::mem::transmute(p) };
+    f()
+}
+
+/// 把整屏视口按安全区**左右**缩进。
+///
+/// 【为什么只缩左右，不缩上下】
+///   上下那部分（iPad 的 24pt 状态栏、全面屏的 Home 指示条）从 0.8.2 起就一直
+///   是画在下面的，玩家已经按那个比例练出手感 —— 动了就是「改表现」而不是
+///   「修 bug」（交接文档第五节的第 3 条坑）。
+///   而 Duo 的竖排状态栏是**真的压在轨道上**：横屏时它占住最外侧 84pt，
+///   音符会被时钟盖住。所以只处理这一侧边距。
+pub fn safe_viewport(vp: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let (_, l, _, r) = safe_area();
+    let (x, y, w, h) = vp;
+    let (l, r) = (l.round().max(0.) as i32, r.round().max(0.) as i32);
+    /* 护栏：收缩量不能超过一半。取到离谱的值（系统换了、单位算错）时
+       宁可让 UI 压在时钟上，也不能把视口吃成一条缝。 */
+    if l + r == 0 || w - l - r < w / 2 {
+        return vp;
+    }
+    (x + l, y, w - l - r, h)
+}
+
 /* ── 对局开始钩子 ────────────────────────────────────────────
    ⚠ 2026-11-15 补：原设计里 `phira::motion::begin_round()` 是对局开始时
      调用的，但那函数**从来没有被任何人调用**（全仓库零引用）。于是

@@ -1201,7 +1201,7 @@ impl Scene for GameScene {
 
         let res = &mut self.res;
         let asp = ui.viewport.2 as f32 / ui.viewport.3 as f32;
-        if res.update_size(ui.viewport) || self.mode == GameMode::View {
+        if res.update_size(crate::huamei::safe_viewport(ui.viewport)) || self.mode == GameMode::View {
             set_camera(&res.camera);
         }
 

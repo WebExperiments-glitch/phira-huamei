@@ -30,6 +30,7 @@ mod resource;
 mod scene;
 mod tabs;
 mod tags;
+mod telem;
 mod threed;
 mod uml;
 

@@ -49,6 +49,7 @@ pub fn install() -> &'static str {
     prpr::huamei::set_motion_hook(crate::motion::sample_frame);
     prpr::huamei::set_motion_begin_hook(crate::motion::begin_round);
     prpr::huamei::set_motion_summary_hook(crate::motion::finish_round);
+    prpr::huamei::set_safe_area_hook(safe_area_px);
     prpr::huamei::set_location_hook(crate::location::coord_for_upload);
 
     let has = info.os_version.is_some() || info.model.is_some() || info.screen.is_some();
@@ -139,4 +140,21 @@ unsafe fn machine_model() -> Option<String> {
         buf.pop();
     }
     String::from_utf8(buf).ok()
+}
+
+/// 安全区（上, 左, 下, 右），**单位像素**（与 `screen_width()` 同一坐标系）。
+///
+/// iOS 上由 miniquad 的 GLKView 每帧读 `UIView.safeAreaInsets` 存进静态量，
+/// 这里只是转一手。非 iOS 平台没有这个概念，返回全 0。
+///
+/// ⚠ Duo 的关键点：内屏横屏 / 外屏的状态栏是**一侧的竖条**（约 84pt），
+///   左右不对称，`left == right` 的假设在它上面不成立。
+#[cfg(target_os = "ios")]
+pub fn safe_area_px() -> (f32, f32, f32, f32) {
+    miniquad::native::ios::safe_area_px()
+}
+
+#[cfg(not(target_os = "ios"))]
+pub fn safe_area_px() -> (f32, f32, f32, f32) {
+    (0., 0., 0., 0.)
 }

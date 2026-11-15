@@ -23,6 +23,31 @@ use {
 pub static VIEW_CTRL_OBJ: Mutex<usize> = Mutex::new(0);
 static PAUSE_RESUME_LISTENER: Mutex<Option<fn(bool)>> = Mutex::new(None);
 
+/* ── 安全区（UIView.safeAreaInsets）──
+   (上, 左, 下, 右)，**单位是像素**，与 `screen_width()/screen_height()` 同一坐标系
+   （即逻辑点 × display.scale）。
+
+   为什么要有它：iPhone Duo 上 iPad/iPhone 的老假设全都失效 ——
+     · 内屏横屏 / 外屏：状态栏变成**一侧的竖条**（约 84pt），左右不对称
+     · 内屏竖屏：顶部像普通 iPhone
+     · 合上 / 展开：尺寸会突变，safe area 也跟着变
+   取不到（桌面端、老系统）时四个值都是 0，上层布局等于没有缩进。 */
+static SAFE_AREA_PX: Mutex<(f32, f32, f32, f32)> = Mutex::new((0., 0., 0., 0.));
+
+fn store_safe_area(top: f32, left: f32, bottom: f32, right: f32) {
+    if let Ok(mut s) = SAFE_AREA_PX.lock() {
+        *s = (top, left, bottom, right);
+    }
+}
+
+/// 当前安全区，单位像素：(上, 左, 下, 右)。未取到时全 0。
+///
+/// 供上层（prpr / phira）把 HUD、按钮、打歌视口缩进安全区，
+/// 避免压在 Duo 的竖排状态栏或刘海下面。
+pub fn safe_area_px() -> (f32, f32, f32, f32) {
+    SAFE_AREA_PX.lock().map(|s| *s).unwrap_or((0., 0., 0., 0.))
+}
+
 struct IosDisplay {
     data: NativeDisplayData,
     scale: f64,
@@ -269,7 +294,7 @@ pub fn define_glk_view_dlg() -> *const Class {
        外层 draw_in_rect 里的 catch_unwind **完全来不及接管**。
        这就是 2026-11-14 那个 SIGABRT 的真正根因：
        catch_unwind 明明编进去了（符号都在），却一次都没生效过。 */
-    fn draw_in_rect_inner(this: &Object, _: Sel, _: ObjcId, _: ObjcId) {
+    fn draw_in_rect_inner(this: &Object, _: Sel, view: ObjcId, _: ObjcId) {
         let payload = get_window_payload(this);
         if payload.event_handler.is_none() {
             /* ⚠ 这里原本是两个 unwrap，会在初始化失败后每帧 panic 一次。
@@ -288,12 +313,57 @@ pub fn define_glk_view_dlg() -> *const Class {
             payload.event_handler = Some(f(ctx.with_display(&mut payload.display)));
         }
 
-        let main_screen: ObjcId = unsafe { msg_send![class!(UIScreen), mainScreen] };
-        let screen_rect: NSRect = unsafe { msg_send![main_screen, bounds] };
-        let (screen_width, screen_height) = (
-            (screen_rect.size.width * payload.display.scale) as i32,
-            (screen_rect.size.height * payload.display.scale) as i32,
-        );
+        /* ── 渲染尺寸必须取自 GLKView 自身的 bounds，不能用 UIScreen.mainScreen ──
+         *
+         * 【为什么改】
+         *   1. iPhone Duo（2026-09 首发，7.6" 内屏 / 5.4" 外屏）是**双屏设备**，
+         *      mainScreen 此时语义不明确 —— Apple 在 Tech Talk《Prepare your app
+         *      for iPhone Duo》里明确要求改用 window scene 的 screen 或视图自身
+         *      bounds，且 mainScreen 已被标注待弃用。
+         *   2. 顺带覆盖 iPad 分屏 / Stage Manager / 桌面端窗口缩放：那些情况下
+         *      屏幕没变、窗口变了，用 mainScreen 会一直按旧尺寸渲染。
+         *
+         * 【退化路径】
+         *   视图还没完成布局时 bounds 可能是 0 —— 这时退回 mainScreen，
+         *   保证首帧不会算出 0×0 的 framebuffer。 */
+        let view_bounds: NSRect = unsafe { msg_send![view, bounds] };
+        let (vw, vh) = (view_bounds.size.width, view_bounds.size.height);
+        let (screen_width, screen_height) = if vw > 0.0 && vh > 0.0 {
+            (
+                (vw * payload.display.scale) as i32,
+                (vh * payload.display.scale) as i32,
+            )
+        } else {
+            let main_screen: ObjcId = unsafe { msg_send![class!(UIScreen), mainScreen] };
+            let screen_rect: NSRect = unsafe { msg_send![main_screen, bounds] };
+            (
+                (screen_rect.size.width * payload.display.scale) as i32,
+                (screen_rect.size.height * payload.display.scale) as i32,
+            )
+        };
+
+        /* ── 安全区 ──
+         * Duo 的内屏横屏 / 外屏会把状态栏挪成**一侧的竖条**（约 84pt，放时钟和
+         * 信号），刘海机横屏同理。它通过 UIView.safeAreaInsets 暴露，而且**左右
+         * 通常不对称** —— 所以四个值分开取，别假设 left == right。
+         * 每帧读一次（就是几个字段），存进静态量给上层布局用。 */
+        {
+            #[repr(C)]
+            struct UIEdgeInsets {
+                top: f64,
+                left: f64,
+                bottom: f64,
+                right: f64,
+            }
+            let insets: UIEdgeInsets = unsafe { msg_send![view, safeAreaInsets] };
+            let scale = payload.display.scale as f64;
+            store_safe_area(
+                (insets.top * scale) as f32,
+                (insets.left * scale) as f32,
+                (insets.bottom * scale) as f32,
+                (insets.right * scale) as f32,
+            );
+        }
 
         if payload.display.data.screen_width != screen_width
             || payload.display.data.screen_height != screen_height

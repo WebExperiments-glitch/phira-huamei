@@ -696,6 +696,17 @@ pub async fn upload_play(payload_json: &[u8], chart_digest: Option<String>) -> R
         body.score,
         body.chart_notes
     );
+    /* 每局把安全区记一行：这是判断「Duo 适配有没有生效」的唯一凭据。
+       内屏横屏 / 外屏应当是「一侧 ~84pt × scale」，竖屏与 iPad 则接近 0。
+       ⚠ 左右经常不相等，别当成对称值看。 */
+    {
+        let (t, l, b, r) = crate::device::safe_area_px();
+        crate::telem::note(format!(
+            "safe_area px t={t:.1} l={l:.1} b={b:.1} r={r:.1} screen={}x{}",
+            macroquad::window::screen_width(),
+            macroquad::window::screen_height()
+        ));
+    }
     post_json::<_, UploadResp>("上报成绩", &format!("{}/play", hm_base()), &body, token.as_deref())
         .await
         .map(|r| {

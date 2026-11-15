@@ -211,11 +211,58 @@ macroquad 不暴露 `UIViewController`，而 iOS 锁方向必须走它（`suppor
 
 **做不了，除非改 macroquad 的 iOS 后端加一个 VC 访问口。**
 
-**⑥ iPhone Duo（折叠屏）适配**
+**⑥ iPhone Duo（折叠屏）适配** —— 2026-11-15 已改掉两处根因
 
-2026 年 9 月发布，7.6 吋内屏 / 5.4 吋外屏。官方说「两块屏幕有着相同的屏幕比例」，所以**不是换比例问题，只是尺寸会突变**。
+`beta.28` 起处理了下面 ①②，③④ 仍待做。
 
-要做的是：`resize` 事件处理 + 安全区（`safeAreaInsets`，灵动岛）。
+参数（决定断点的就是这几个数）：内屏 7.6" 1878×2670 / **669×951pt**，
+外屏 5.4" 1398×2034 / **466×678pt**，内外屏同比例（约 1.4:1），iOS 27。
+注意它是**双屏设备**，不是「一块屏会变大小」。
+
+**① 渲染尺寸不能取 `UIScreen.mainScreen`（已改）**
+
+双屏设备上 mainScreen 语义不明确（Apple 明确要求改用 window scene 的 screen
+或视图自身 bounds），且该 API 已标注待弃用。`vendor/prpr-miniquad/src/native/ios.rs`
+的 `draw_in_rect_inner` 原来用 mainScreen.bounds 算 framebuffer 尺寸，现在改成
+**GLKView 自身的 bounds**，取不到（首帧未布局）才退回 mainScreen。
+副作用是顺带修好了 iPad 分屏 / Stage Manager 的窗口缩放。
+
+**② 安全区（已接线，布局按左右缩进）**
+
+Duo 内屏横屏与外屏把状态栏挪成**一侧的竖条**（约 84pt，放时钟/信号），
+左右**不对称**；刘海机横屏同理。链路：
+
+```
+UIView.safeAreaInsets  →  miniquad::native::ios::safe_area_px()   （像素，每帧刷新）
+                       →  prpr::huamei::set_safe_area_hook(...)   （phira 注册）
+                       →  prpr::huamei::safe_viewport(vp)         （只缩左右）
+                       →  game.rs 的 res.update_size(...)         （打歌视口）
+```
+
+**为什么只缩左右**：上下那部分（iPad 24pt 状态栏、Home 指示条）从 0.8.2 起
+就一直画在下面，玩家已按那个比例练出手感；而 Duo 的竖排状态栏是**真的压在
+轨道上**。改上下属于「改表现」，改左右属于「修 bug」。
+
+每局结算会在 `motion.log` 记一行 `safe_area px t=… l=… b=… r=…`，
+这是判断适配有没有生效的唯一凭据（无 Mac 环境读不到 NSLog）。
+
+**③ 菜单与谱面库仍未适配（待做）**
+
+`main.rs` / `song.rs` 不持有 `prpr::core::Resource`，拿不到 `update_size()`，
+在 951×669 这种内屏横屏尺寸下仍会挤在右上角。修法是把 `Resource` 提到场景之上，
+是结构性改动（见 ③ 竖屏适配那一条）——**和竖屏是同一个根治点**。
+
+**④ 真正的竖屏玩法仍未做**
+
+音符按竖屏高度生成、轨道重新布局。那不是适配，是重新设计谱面呈现。
+
+**⑤ 在 Windows 上无法验证 Duo**
+
+本机没有 iOS 模拟器（需要 Xcode 27.1 的 Device Hub），也没有真机。
+`vendor/prpr-miniquad` 可以用
+`cargo check -p miniquad --target aarch64-apple-ios` 单独编译校验；
+`phira` 整体不行 —— `zstd-sys` 的构建脚本要 `xcrun`。
+所以 Duo 的实际表现只能靠装到设备上的日志（`safe_area` 那一行）。
 
 ### 🟢 已完成但可改进
 

@@ -17,6 +17,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 
+use crate::telem::note;
+#[cfg(target_os = "ios")]
+use crate::telem::note_warn;
+
 /// 全局采样器。对局开始时 reset，结算时 take。
 static SAMPLER: Mutex<Sampler> = Mutex::new(Sampler::new());
 /// startDeviceMotionUpdates 是否已成功启动。
@@ -32,70 +36,6 @@ static START_TRIED: AtomicBool = AtomicBool::new(false);
 static FRAMES: AtomicU32 = AtomicU32::new(0);
 static NO_DATA_FRAMES: AtomicU32 = AtomicU32::new(0);
 static HAD_SAMPLE: AtomicBool = AtomicBool::new(false);
-
-/* ── 诊断输出 ────────────────────────────────────────────────
-   ⚠ 光用 tracing 不够：它最终走 miniquad 的 `log!` → iOS 上是 NSLog，
-     要连 Console.app / idevicesyslog 才看得到。而本机是 Windows、没有 Mac，
-     于是「日志打出来了」和「日志看不到」没有区别 —— 这正是 gyro 问题
-     拖了一版的原因。
-
-   所以每条诊断同时写一份到 Documents/motion.log：Info.plist 开了
-   UIFileSharingEnabled，用户在「文件」App 里能直接拿到，和 panic.log 同目录。 */
-fn note(msg: impl AsRef<str>) {
-    let msg = msg.as_ref();
-    tracing::info!("motion: {msg}");
-    #[cfg(target_os = "ios")]
-    sink::append(msg);
-}
-
-#[cfg(target_os = "ios")]
-fn note_warn(msg: impl AsRef<str>) {
-    let msg = msg.as_ref();
-    tracing::warn!("motion: {msg}");
-    #[cfg(target_os = "ios")]
-    sink::append(&format!("WARN {msg}"));
-}
-
-#[cfg(target_os = "ios")]
-mod sink {
-    use std::io::Write;
-    use std::path::PathBuf;
-
-    /// 与 main.rs 的 `panic_log_dir()` 同一套候选目录。
-    fn dir() -> Option<PathBuf> {
-        let mut cands: Vec<PathBuf> = Vec::new();
-        if let Ok(h) = std::env::var("HOME") {
-            if !h.is_empty() {
-                cands.push(PathBuf::from(&h).join("Documents"));
-                cands.push(PathBuf::from(&h).join("Library").join("Caches"));
-            }
-        }
-        if let Ok(t) = std::env::var("TMPDIR") {
-            if !t.is_empty() {
-                cands.push(PathBuf::from(t));
-            }
-        }
-        cands.into_iter().find(|d| std::fs::create_dir_all(d).is_ok())
-    }
-
-    /// 单文件上限 256 KB，超了轮转一份就够 —— 沙盒空间有限，
-    /// 而且真要看也只看最近几局。
-    const MAX_BYTES: u64 = 256 * 1024;
-
-    pub fn append(line: &str) {
-        let Some(d) = dir() else { return };
-        let path = d.join("motion.log");
-        if let Ok(m) = std::fs::metadata(&path) {
-            if m.len() > MAX_BYTES {
-                let _ = std::fs::rename(&path, d.join("motion.log.1"));
-            }
-        }
-        let ts = chrono::Local::now().format("%m-%d %H:%M:%S%.3f");
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            let _ = writeln!(f, "[{ts}] {line}");
-        }
-    }
-}
 
 #[derive(Default)]
 struct Sampler {
