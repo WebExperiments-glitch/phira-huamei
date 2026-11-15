@@ -77,6 +77,15 @@ struct UploadBody<'a> {
     keyboard: bool,
     played_at: i64,
     judge: &'a str,
+    /* ⚠ 这两个字段漏过一次（2026-11-15）。
+       prpr 的 HuameiPayload 序列化出来是完整的，但 phira 这边**重新构造**
+       了一遍 UploadBody —— 两套结构体手工对齐，加字段必然漏。
+       表现是：客户端明明传了，服务端收到的是 null，而且**没有任何报错**
+       （多传/少传字段在 HTTP 层面都合法）。
+
+       以后给 HuameiPayload 加字段，必须同时改这里，否则又是静默丢失。 */
+    max_touch_points: u8,
+    device: prpr::huamei::DeviceInfo,
 }
 
 fn bare_client() -> reqwest::Client {
@@ -674,6 +683,8 @@ pub async fn upload_play(payload_json: &[u8], chart_digest: Option<String>) -> R
         keyboard: p.keyboard,
         played_at: p.played_at,
         judge: &p.judge,
+        max_touch_points: p.max_touch_points,
+        device: p.device.clone(),
     };
     debug!(
         "huamei: 上报谱面 {} [{}] {} 分 {} 个音符",
