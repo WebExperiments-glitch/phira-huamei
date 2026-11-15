@@ -38,8 +38,9 @@ impl Mods {
     }
     fn conflicts(flag: Mods) -> &'static [Mods] {
         match flag {
-            Mods::FADE_IN => &[Mods::FADE_OUT],
-            Mods::FADE_OUT => &[Mods::FADE_IN],
+            /* 【2026-11-15 移除】FADE_IN 与 FADE_OUT 原本互斥。
+               放开是为了支持「全隐」：两个都开时 note.rs 取 min，
+               形成中间淡出、两端可见的沙漏。issue #785。 */
             Mods::INSTANT_DEATH_AP => &[Mods::INSTANT_DEATH_FC],
             Mods::INSTANT_DEATH_FC => &[Mods::INSTANT_DEATH_AP],
             _ => &[],

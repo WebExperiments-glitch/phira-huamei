@@ -245,12 +245,29 @@ impl Note {
         } else {
             &res.res_pack.note_style
         };
-        let mod_alpha = if res.config.has_mod(Mods::FADE_OUT) {
-            ((self.time - res.time - LIMIT_BAD) / LIMIT_BAD).clamp(0., 1.)
-        } else if res.config.has_mod(Mods::FADE_IN) {
-            (1. - (self.time - res.time - LIMIT_BAD) / LIMIT_BAD).clamp(0., 1.)
-        } else {
-            1.
+        /* 上隐 / 下隐 / 全隐（2026-11-15，issue #785）
+         *
+         * 原来写的是 if/else if —— 两者互斥，只能开一个。
+         *
+         * 语义拆开看：
+         *   FADE_OUT（下隐）：越接近判定线越亮   alpha = progress
+         *   FADE_IN （上隐）：越接近判定线越淡   alpha = 1 - progress
+         *
+         * 两个都开就是「上方可见 → 中间消失 → 临近判定线又出现」，
+         * 也就是 Phigros 的全隐。所以取 **两者较小值**：
+         *   上半段由 FADE_IN 压暗，下半段由 FADE_OUT 压暗，
+         *   中间刚好两者都低 —— 沙漏形状。
+         *
+         * ⚠ 不是取 0。取 0 会让音符彻底不可见，那不是全隐是「没音符」，
+         *   玩家连该不该按都不知道。 */
+        let progress = ((self.time - res.time - LIMIT_BAD) / LIMIT_BAD).clamp(0., 1.);
+        let fade_out = res.config.has_mod(Mods::FADE_OUT);
+        let fade_in = res.config.has_mod(Mods::FADE_IN);
+        let mod_alpha = match (fade_out, fade_in) {
+            (true, true) => progress.min(1. - progress),
+            (true, false) => progress,
+            (false, true) => 1. - progress,
+            (false, false) => 1.,
         };
         let draw = |res: &mut Resource, tex: Texture2D| {
             let mut color = color;
