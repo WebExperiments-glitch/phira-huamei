@@ -462,6 +462,33 @@ macro_rules! loads {
     };
 }
 
+/// 由视口尺寸算出 `(chart_aspect, view_aspect)`。
+///
+/// 纯函数：不碰任何状态，便于单测与推演「拉高窗口会怎样」。
+///
+/// 【密度基准 = 短边】
+///   每个谱面单位占 `短边 / 2` 像素 —— 也就是「把设备横过来时谱高的尺寸」。
+///     · 横屏：短边是高 → 谱面单位 = 半屏高（0.8.2 以来一致）
+///     · 竖屏：短边是宽 → 谱面单位 = 半屏宽（与横屏同一密度）
+///   所以竖屏拉高**只延长可视范围，不改变音符大小**。
+///
+/// 【可视范围】
+///   `chart_aspect / view_aspect`，即判定线以上能看到多少个谱面单位：
+///     · 横屏：恒为 1.0
+///     · 竖屏：等于 `高 / 宽`，随高度线性变化
+///
+/// ⚠ 曾经写成 `min(design, 1/screen_ar)`：那等于把密度基准取成对角线方向，
+///   窗口一高音符就被压小，看起来像「拉长了」，其实是单位变小。
+pub fn aspects_for(vp_w: f32, vp_h: f32, design: f32) -> (f32, f32) {
+    let screen_ar = vp_w / vp_h;
+    /* w / min(w,h)：横屏 = w/h，竖屏 = 1。再被谱面设计比例封顶。 */
+    let density_base = vp_w / vp_w.min(vp_h);
+    let chart_ar = design.min(density_base);
+    /* 横屏沿用 0.8.2 的 letterbox 行为；竖屏铺满。 */
+    let view_ar = if screen_ar >= 1.0 { chart_ar } else { screen_ar };
+    (chart_ar, view_ar)
+}
+
 impl Resource {
     pub async fn load_icons() -> Result<[SafeTexture; 8]> {
         Ok(loads![
@@ -641,13 +668,35 @@ impl Resource {
          *
          * 【横屏零回归】
          *   screen_ar >= 1 时 chart_ar == view_ar == 旧 effective，逐字节一致。 */
-        let chart_ar = chart_ar.min(if screen_ar >= 1.0 { screen_ar } else { 1. / screen_ar });
-        let view_ar = if screen_ar >= 1.0 { chart_ar } else { screen_ar };
+        /* 密度基准 = **短边**。
+         *
+         * 每个谱面单位占多少像素，应当等于「短边 / 2」—— 也就是把设备
+         * 横过来时谱面高度的那个尺寸。这样：
+         *   · 横屏：短边是高，谱面单位 = 半屏高（0.8.2 以来的表现，不变）
+         *   · 竖屏：短边是宽，谱面单位 = 半屏宽（= 横屏时的同一密度）
+         *
+         * 于是竖屏**拉高窗口只会延长可视范围，不会改变音符大小** ——
+         * 渲染距离 = 高度 / 宽度，随高度连续变化。这才是竖屏该有的行为。
+         *
+         * ⚠ 曾经写成 chart_ar = min(design, 1/screen_ar)：等价于把密度基准
+         *   取成了「屏幕对角线方向的比例」，窗口一高音符就被压小，
+         *   看起来像"拉长了"，其实是每个单位变小了。 */
+        let (chart_ar, view_ar) = aspects_for(vp.2 as f32, vp.3 as f32, chart_ar);
 
         self.chart_aspect = chart_ar;
         self.aspect_ratio = view_ar;
         self.camera.zoom.y = -view_ar;
         self.camera.viewport = Some(viewport(view_ar, vp));
+        /* 一行诊断：可视谱面范围（判定线以上）随窗口怎么变，一眼能看出来。
+           竖屏 iPad 11" 自然姿态应当是 ≈1.43；窗口拉高会线性变大。 */
+        tracing::info!(
+            "viewport {}x{} chart_ar={:.3} view_ar={:.3} 可视谱面范围={:.2}",
+            vp.2,
+            vp.3,
+            chart_ar,
+            view_ar,
+            chart_ar / view_ar
+        );
         true
     }
 
@@ -677,5 +726,86 @@ impl Resource {
         unsafe { get_internal_gl() }.quad_gl.push_model_matrix(nalgebra_to_glm(mat));
         f(self);
         unsafe { get_internal_gl() }.quad_gl.pop_model_matrix();
+    }
+}
+
+#[cfg(test)]
+mod aspect_tests {
+    use super::aspects_for;
+
+    /// 判定线以上能看到多少个谱面单位（这就是「渲染距离」）。
+    fn visible(w: f32, h: f32, design: f32) -> f32 {
+        let (c, v) = aspects_for(w, h, design);
+        c / v
+    }
+
+    /// 每个谱面单位占多少像素。
+    /// 世界坐标横跨 ±1 铺满宽度 → 每世界单位 `w/2` 像素；
+    /// 谱面单位 → 世界单位要除以 `chart_aspect`。
+    fn px_per_unit(w: f32, h: f32, design: f32) -> f32 {
+        let (c, _) = aspects_for(w, h, design);
+        (w / 2.) / c
+    }
+
+    /* ── 横屏：与 0.8.2 完全一致 ── */
+    #[test]
+    fn landscape_unchanged() {
+        // iPad Pro 11" 横屏 1194×834，谱面设计 16:9
+        let (c, v) = aspects_for(1194., 834., 1.7778);
+        assert!((c - 1194. / 834.).abs() < 1e-4, "chart_ar={c}");
+        assert!((v - c).abs() < 1e-6, "横屏两者必须相等（否则视口会错位）");
+        assert!((visible(1194., 834., 1.7778) - 1.0).abs() < 1e-6);
+    }
+
+    /// 更宽的屏（21:9）仍然按谱面设计比例 letterbox，行为不变。
+    #[test]
+    fn landscape_ultrawide_letterboxes() {
+        let (c, v) = aspects_for(2560., 1080., 1.7778);
+        assert!((c - 1.7778).abs() < 1e-4, "chart_ar={c}");
+        assert!((v - c).abs() < 1e-6);
+    }
+
+    /* ── 竖屏：渲染距离随高度变化，音符大小不变 ── */
+    #[test]
+    fn portrait_density_is_width_based() {
+        // 同一宽度、三种高度：每单位像素必须完全一致
+        let w = 834.;
+        let base = px_per_unit(w, 1194., 1.7778);
+        /* 只测竖屏（h > w）：横屏的密度基准是高度，本就该等于 h/2。 */
+        for h in [1000., 1194., 1600., 2400.] {
+            let p = px_per_unit(w, h, 1.7778);
+            assert!((p - base).abs() < 1e-3, "h={h} 像素密度变了：{p} vs {base}");
+        }
+    }
+
+    #[test]
+    fn portrait_render_distance_scales_with_height() {
+        let w = 834.;
+        let mut last = 0.;
+        for h in [1000., 1400., 2000., 2800.] {
+            let vis = visible(w, h, 1.7778);
+            /* 可视范围 = 高 / 宽 —— 线性于高度 */
+            assert!((vis - h / w).abs() < 1e-4, "h={h} 可视范围 {vis}，期望 {}", h / w);
+            assert!(vis > last, "拉高窗口后可视范围必须变大");
+            last = vis;
+        }
+    }
+
+    /// 竖屏要比横屏看得远（这才是「竖屏优势」）。
+    #[test]
+    fn portrait_sees_further_than_landscape() {
+        let landscape = visible(1194., 834., 1.7778);
+        let portrait = visible(834., 1194., 1.7778);
+        assert!(portrait > landscape * 1.4, "竖屏 {portrait} 相对横屏 {landscape} 优势不足");
+    }
+
+    /// 极端形状不能算出 0 / 负数 —— 否则相机缩放会炸。
+    #[test]
+    fn degenerate_sizes_are_safe() {
+        for (w, h) in [(1., 3000.), (3000., 1.), (500., 500.)] {
+            let (c, v) = aspects_for(w, h, 1.7778);
+            assert!(c > 0. && v > 0., "w={w} h={h} -> {c},{v}");
+            assert!(c.is_finite() && v.is_finite());
+        }
     }
 }
