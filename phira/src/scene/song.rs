@@ -876,12 +876,16 @@ impl SongScene {
             //   · 没登 huamei            → 不弹，因为确实不会上传
             //   · offline_mode / UNRATED / 变速 → 不弹，prpr 侧也不会造载荷
             let c = &get_data().config;
-            crate::huamei::current_token().is_some()
-                && !c.offline_mode
+            /* 2026-11-15：不再要求登录。
+               未登录时客户端会匿名上报（owner_id = null），所以这一局确实计入。
+               剩下四条与 prpr/src/scene/game.rs 造 record_data 的守卫一一对应：
+               任何一条不满足，prpr 侧都不会造载荷，弹「不计成绩」才是诚实的。 */
+            let c = &get_data().config;
+            !c.offline_mode
                 && can_rated
                 && !mods.intersects(Mods::UNRATED)
                 && c.speed >= 1.0 - 1e-3
-        };
+            };
         if !rated && can_rated && mode == GameMode::Normal {
             show_message(tl!("warn-unrated")).warn();
         }
