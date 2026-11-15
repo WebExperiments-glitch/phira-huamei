@@ -1074,8 +1074,11 @@ impl SongScene {
             // **真实上传量为 0**：huamei 账号是我们自建的邮箱体系，玩家只有
             // Phira 账号，没人会为此专门注册。改成「huamei 账号 **或** Phira 已登录」
             // 任一存在就上报；服务端拿 `x-phira-token` 去调 Phira `/me` 验身份。
-            let upload_fn: Option<UploadFn> =
-                if crate::huamei::current_token().is_some() || get_data().me.is_some() {
+            let upload_fn: Option<UploadFn> = {
+                /* 2026-11-15：不再要求登录。未登录也会匿名上报（服务端 owner_id = null），
+                   所以发送器无条件建。原来这里没登录就返回 None，EndingScene 里
+                   `upload_fn.and_then(record_data)` 直接拿不到东西 —— 结算页连上传
+                   都不发起，右上角的「上传中」也就永远不会出现。 */
                 Some(Arc::new(move |data: Vec<u8>| {
                     let digest = huamei_digest.clone();
                     Task::new(async move {
@@ -1096,9 +1099,6 @@ impl SongScene {
                         })
                     })
                 }))
-            } else {
-                debug!("huamei: 未登录，跳过本局上报");
-                None
             };
             // ══════════════════════════════════════════════════════════
 
