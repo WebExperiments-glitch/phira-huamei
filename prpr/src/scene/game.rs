@@ -981,6 +981,7 @@ impl Scene for GameScene {
                                 self.res.config.mods.bits(),
                                 self.res.config.use_keyboard,
                                 crate::huamei::encode_judgements(&self.judge),
+                                crate::huamei::device_info(),
                             );
                             match payload.to_json_bytes() {
                                 Ok(bytes) => record_data = Some(bytes),

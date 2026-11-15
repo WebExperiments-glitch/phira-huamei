@@ -5,7 +5,7 @@ respack = Respack
 
 not-opened = Not available yet.
 # Tap to sign in to the huamei account (not the official Phira account).
-not-logged-in = Tap to sign in (huamei)
+not-logged-in = Tap to sign in to your P.H.M. account
 
 failed-to-update = Failed to fetch user info.
 note-try-login-again = Try logging in again.

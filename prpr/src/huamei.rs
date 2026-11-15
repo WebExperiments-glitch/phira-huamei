@@ -51,6 +51,54 @@ pub const OFFSET_UNKNOWN: i16 = i16::MIN;
 pub const RECORD_SIZE: usize = 8;
 
 /// 上报载荷。字段名走 snake_case（服务端是 JS，无所谓，但保持一致好排查）。
+/// 设备与系统信息 —— 上报载荷的一部分。
+///
+/// ⚠ 每个字段都可空，理由不同：
+///   · os_version / model / screen：iOS 上拿得到，但其它平台采集方式不同
+///   · lat / lon：要用户授权定位，拒绝就是 None
+///   · gyro：要 CoreMotion，且只传摘要（完整采样太大）
+/// 拒绝授权不阻塞上报 —— 采不到就 null，数据照收。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    /// 系统版本串，如 "17.0" 或 "iOS 17.0 (21A329)"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
+    /// 机型标识，如 "iPhone15,2"（不是营销名）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// 屏幕逻辑尺寸 [宽, 高] 与像素比
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen: Option<[f32; 3]>,
+    /// 城市级经纬度（已降精度）。None = 未授权或未取到。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lon: Option<f64>,
+    /// 陀螺仪摘要：[均值, 标准差, 峰值]，单位 rad/s。
+    /// 传摘要而不是完整采样：一局 3 分钟 @60Hz 是 1 万个点，没人会分析。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gyro: Option<[f32; 3]>,
+}
+
+/* 全局设备信息 —— 由 phira 侧在启动时采集一次并写入。
+
+   ⚠ 为什么不用参数传：build_payload 的调用点在 prpr 的 game.rs 里，
+     而采集需要 objc2-ui-kit（只有 phira 依赖它）。直接传要穿透
+     Scene → LoadingScene → GameScene 三层构造函数，改动面远大于收益。
+
+   采不到（非 iOS / 权限拒绝 / 还没设）就保持 Default，序列化时字段省略。 */
+static DEVICE_INFO: std::sync::OnceLock<DeviceInfo> = std::sync::OnceLock::new();
+
+/// 由 phira 侧调用一次。重复调用以第一次为准（OnceLock 语义）。
+pub fn set_device_info(info: DeviceInfo) {
+    let _ = DEVICE_INFO.set(info);
+}
+
+/// 取当前设备信息。未设置时返回 Default（所有字段 None）。
+pub fn device_info() -> DeviceInfo {
+    DEVICE_INFO.get().cloned().unwrap_or_default()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HuameiPayload {
     pub client_ver: String,
@@ -84,6 +132,11 @@ pub struct HuameiPayload {
 
     /// base64(紧凑判定块)
     pub judge: String,
+
+    /// 设备与系统信息。**全部可空** —— 权限被拒或平台不支持时留 None。
+    /// 用途是分层分析（机型性能 vs 判定偏差），不是用户画像。
+    #[serde(default)]
+    pub device: DeviceInfo,
 }
 
 impl HuameiPayload {
@@ -157,6 +210,7 @@ pub fn build_payload(
     mods: i32,
     keyboard: bool,
     judge_bytes: Vec<u8>,
+    device: DeviceInfo,
 ) -> HuameiPayload {
     HuameiPayload {
         client_ver: String::new(),
@@ -175,6 +229,7 @@ pub fn build_payload(
         max_touch_points: if keyboard { 0 } else { result.max_touch.min(255) as u8 },
         played_at: chrono::Utc::now().timestamp_millis(),
         judge: STANDARD.encode(&judge_bytes),
+        device,
     }
 }
 

@@ -25,6 +25,19 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+
+	<!-- ══ 数据采集相关的权限（2026-11-15）══
+	     目的：了解玩家在什么设备、什么姿势、什么场景下打谱，
+	     用来改进难度模型与产品。**拒绝也不阻塞** —— 采不到就记为 null。 -->
+
+	<!-- 定位：只用一个大致经纬度做「城市级」分布统计。
+	     ⚠ 措辞必须诚实：我们确实会传坐标，所以要写明用途与粒度。 -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>用于统计游玩地点的城市级分布（不记录完整地址），帮助我们了解不同地区玩家的设备与网络状况。</string>
+
+	<!-- 陀螺仪/加速度计：iOS 从 10 起要这个声明才能读 CoreMotion。 -->
+	<key>NSMotionUsageDescription</key>
+	<string>用于记录游玩时的设备姿态与晃动，分析手持角度对判定偏移的影响。</string>
 	<key>CFBundleExecutable</key>
 	<string>phira-main</string>
 

@@ -1,6 +1,6 @@
 
 login = Login
-login-sub = Login to access Phira's online features! (Charts, events, multiplayer, etc.)
+login-sub = Sign in to P.H.M. and keep every play in your own records.
 back-login = Back to Login
 register = Register
 

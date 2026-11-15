@@ -105,6 +105,9 @@ ndk-context = "0.1"
 sasa = { workspace = true, default-features = false, features = ["oboe"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
+# sysctl 读 hw.machine（具体机型标识）。objc2 里也有 ffi 但版本耦合，
+# 直接用 libc 更稳 —— 这个 crate 本来就在依赖树里。
+libc = "0.2"
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
 objc2-ui-kit = { workspace = true }

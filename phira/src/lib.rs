@@ -12,6 +12,7 @@ mod censor;
 mod charts_view;
 mod client;
 mod data;
+mod device;
 pub mod deeplink;
 /// 【huamei 新增】huamei 账号登录 + 成绩上报。
 /// 契约见 `docs/规范/数据飞轮契约.md`。
@@ -383,6 +384,9 @@ fn build_global_window_conf() -> Conf {
 
 #[no_mangle]
 pub extern "C" fn quad_main() {
+    /* 设备信息采集放在 Window 之前：这个函数只读系统属性、不碰图形上下文，
+       越早越好 —— 一旦开局就要用它填上报载荷了。 */
+    crate::device::install();
     macroquad::Window::from_config(build_global_window_conf(), async {
         if let Err(err) = the_main().await {
             error!(?err, "global error");

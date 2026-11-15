@@ -1,6 +1,6 @@
 
 login = 登录
-login-sub = 登录以加入活跃的在线社区
+login-sub = 登录 P.H.M.，每一局判定都会记进你自己的数据档案
 back-login = 返回登录
 register = 注册
 
