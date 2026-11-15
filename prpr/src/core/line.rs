@@ -390,8 +390,10 @@ impl JudgeLine {
                 res.screen_to_world(Point::new(vw, -vh)),
                 res.screen_to_world(Point::new(vw, vh)),
             ];
-            let height_above = p[0].y.max(p[1].y.max(p[2].y.max(p[3].y))) * res.aspect_ratio;
-            let height_below = -p[0].y.min(p[1].y.min(p[2].y.min(p[3].y))) * res.aspect_ratio;
+            /* world y → 谱面 y：乘的是**谱面**比例（见 resource.rs 的说明）。
+               这个值直接决定「往上有多少音符要渲染」，竖屏看更远就靠它。 */
+            let height_above = p[0].y.max(p[1].y.max(p[2].y.max(p[3].y))) * res.chart_aspect;
+            let height_below = -p[0].y.min(p[1].y.min(p[2].y.min(p[3].y))) * res.chart_aspect;
             let agg = res.config.aggressive;
             for note in self.notes.iter().take(self.cache.not_plain_count).filter(|it| it.above) {
                 note.render(res, &mut config, bpm_list);

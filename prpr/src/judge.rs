@@ -541,6 +541,12 @@ impl Judge {
               self.inner.max_touch = self.inner.max_touch.max(active.len() as u32);
           }
         self.key_down_count = self.key_down_count.saturating_add_signed(key_delta);
+        /* 像素 → 谱面坐标的纵向系数。
+           ⚠ 屏幕上的相对位置对应多少**谱面距离**，取决于相机（视图比例）；
+             而谱面自身用的是 `chart_aspect`。横屏两者相等（系数 1，
+             与旧行为逐字节一致），竖屏铺满时才不等于 1 ——
+             漏了这个系数，竖屏判定会整体偏移。 */
+        let y_squash = res.chart_aspect / res.aspect_ratio;
         {
             fn to_local(Vec2 { x, y }: Vec2) -> Point {
                 Point::new(x / screen_width() * 2. - 1., y / screen_height() * 2. - 1.)
@@ -602,7 +608,7 @@ impl Judge {
                     .iter()
                     .map(|touch| {
                         let p = touch.position;
-                        let p = inv.transform_point(&Point::new(p.x, -p.y));
+                        let p = inv.transform_point(&Point::new(p.x, -p.y * y_squash));
                         fn ok(f: f32) -> bool {
                             matches!(f.classify(), FpCategory::Zero | FpCategory::Subnormal | FpCategory::Normal)
                         }

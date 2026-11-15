@@ -173,7 +173,7 @@ impl Note {
     }
 
     pub fn now_transform(&self, res: &Resource, ctrl_obj: &CtrlObject, base: f32, incline_sin: f32) -> Matrix {
-        let incline_val = 1. - incline_sin * (base * res.aspect_ratio + self.object.translation.1.now()) * RPE_HEIGHT / 2. / 360.;
+        let incline_val = 1. - incline_sin * (base * res.chart_aspect + self.object.translation.1.now()) * RPE_HEIGHT / 2. / 360.;
         let mut tr = self.object.now_translation(res);
         tr.x *= if matches!(self.kind, NoteKind::Hold { .. }) {
             1.
@@ -217,8 +217,8 @@ impl Note {
         color.a *= res.alpha * ctrl_obj.alpha.now_opt().unwrap_or(1.);
         let spd = self.speed * ctrl_obj.y.now_opt().unwrap_or(1.) as f64;
 
-        let line_height = config.line_height / res.aspect_ratio as f64 * spd;
-        let height = self.height / res.aspect_ratio as f64 * spd;
+        let line_height = config.line_height / res.chart_aspect as f64 * spd;
+        let height = self.height / res.chart_aspect as f64 * spd;
 
         let base = height - line_height;
         let cover_base = if !config.settings.hold_partial_cover {
@@ -226,7 +226,7 @@ impl Note {
         } else {
             match self.kind {
                 NoteKind::Hold { end_time: _, end_height } => {
-                    let end_height = end_height / res.aspect_ratio as f64 * spd;
+                    let end_height = end_height / res.chart_aspect as f64 * spd;
                     end_height - line_height
                 }
                 _ => height - line_height,
@@ -298,7 +298,7 @@ impl Note {
                     if res.time >= end_time {
                         return;
                     }
-                    let end_height = end_height / res.aspect_ratio as f64 * spd;
+                    let end_height = end_height / res.chart_aspect as f64 * spd;
                     color.a *= mod_alpha as f32;
 
                     let h = if self.time <= res.time { line_height } else { height };

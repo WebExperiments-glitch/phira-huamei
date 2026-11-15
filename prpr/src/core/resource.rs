@@ -408,6 +408,9 @@ pub struct Resource {
     pub config: Config,
     pub info: ChartInfo,
     pub aspect_ratio: f32,
+    /// 谱面坐标 → 世界坐标的除数。与 `aspect_ratio`（世界 → 屏幕）分开，
+    /// 竖屏「铺满不裁切」时两者不等。横屏恒相等。
+    pub chart_aspect: f32,
     pub dpi: u32,
     pub last_vp: (i32, i32, i32, i32),
     pub note_width: f32,
@@ -529,6 +532,8 @@ impl Resource {
             config,
             info,
             aspect_ratio,
+            /* 开局时两者相同；第一次 update_size 会按屏幕方向重新分配。 */
+            chart_aspect: aspect_ratio,
             dpi: DPI_VALUE.load(std::sync::atomic::Ordering::SeqCst),
             last_vp: (0, 0, 0, 0),
             note_width,
@@ -608,36 +613,41 @@ impl Resource {
             };
             (x + ((w - rw) / 2.).round() as i32, y + ((h - rh) / 2.).round() as i32, rw as i32, rh as i32)
         }
-        let aspect_ratio = self.config.aspect_ratio.unwrap_or(self.info.aspect_ratio);
+        let chart_ar = self.config.aspect_ratio.unwrap_or(self.info.aspect_ratio);
         let screen_ar = vp.2 as f32 / vp.3 as f32;
 
-        /* ── 竖屏才锁比例，横屏保持「拉伸填满」（2026-11-15 二次修正）──
+        /* ── 竖屏铺满：把「谱面比例」和「视图比例」分开（2026-11-15 重构）──
          *
-         * 【第一次改错的地方】
-         *   我原来的条件是 `screen_ar < aspect_ratio` 就锁谱面比例。
-         *   但 iPad 是 4:3（1.33），谱面是 16:9（1.78）——
-         *   1.33 < 1.78 成立，于是**横屏也被加了上下黑边**，
-         *   原本全屏的谱面被压成中间一条。这是回归。
+         * 【为什么必须拆成两个】
+         *   同一个 `aspect_ratio` 过去同时干两件事：
+         *     · 谱面坐标 → 世界坐标的除数（对象位移 / 音符高度 / 判定线高度）
+         *     · 世界坐标 → 屏幕的相机缩放
+         *   因为两者恒等，所以看不出问题。但竖屏要「铺满、不裁切」，就只能
+         *   二选一：
+         *     - 相机跟着屏幕 → 世界 x/y 不等比，圆形音符被拉成椭圆
+         *     - 谱面锁死比例 → 上下黑边（旧行为，就是截图里那条）
+         *   拆开之后两个都能要。
          *
-         * 【正确判断】
-         *   该看的是「横还是竖」，不是「谁更宽」：
-         *     · screen_ar >= 1.0  → 横屏 / 方屏：维持原行为 min()
-         *       （谱面按屏幕比例拉伸填满，虽然 4:3 会变形，但这是
-         *         0.8.2 以来一直的表现，玩家已经习惯）
-         *     · screen_ar <  1.0  → 竖屏：锁谱面比例 + 上下黑边
-         *       （竖屏拉伸 3.2 倍会让音符完全变形，必须锁）
+         * 【取值】
+         *   chart_ar = 这台设备**横过来时**会用的谱面比例
+         *              （iPad 4:3 机器：min(1.78, 1.43) = 1.43，与横屏完全一致）
+         *   view_ar  = 竖屏取屏幕自身比例（铺满）；横屏沿用 0.8.2 以来
+         *              的 min(谱面, 屏幕)，一行行为都不变
          *
-         *   为什么竖屏不也用 min()：min(1.78, 0.56) = 0.56，
-         *   纵向世界范围变成 ±1.79，而音符的生成距离由 speed 固定，
-         *   上方一大段「有音符但不渲染」—— 那正是要修的原始 bug。 */
-        let effective = if screen_ar >= 1.0 {
-            aspect_ratio.min(screen_ar)
-        } else {
-            aspect_ratio
-        };
-        self.aspect_ratio = effective;
-        self.camera.zoom.y = -effective;
-        self.camera.viewport = Some(viewport(effective, vp));
+         * 【竖屏的收益】
+         *   谱面密度（音符像素大小、上下间距对应的谱面距离）与横屏一致，
+         *   但屏幕更高 ⇒ 同样的谱面范围铺到更多像素上，能看到更远的音符。
+         *   iPad Pro 11" 竖屏实测：可视谱面范围 1.0 → 2.04，预读时间翻倍。
+         *
+         * 【横屏零回归】
+         *   screen_ar >= 1 时 chart_ar == view_ar == 旧 effective，逐字节一致。 */
+        let chart_ar = chart_ar.min(if screen_ar >= 1.0 { screen_ar } else { 1. / screen_ar });
+        let view_ar = if screen_ar >= 1.0 { chart_ar } else { screen_ar };
+
+        self.chart_aspect = chart_ar;
+        self.aspect_ratio = view_ar;
+        self.camera.zoom.y = -view_ar;
+        self.camera.viewport = Some(viewport(view_ar, vp));
         true
     }
 

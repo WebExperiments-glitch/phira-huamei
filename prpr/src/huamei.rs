@@ -78,6 +78,16 @@ pub struct DeviceInfo {
     /// 传摘要而不是完整采样：一局 3 分钟 @60Hz 是 1 万个点，没人会分析。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gyro: Option<[f32; 3]>,
+    /// **实际渲染尺寸** [宽, 高]，单位像素。
+    ///
+    /// 【为什么不能只看 `screen`】
+    ///   `screen` 来自 `UIScreen`，是**设备的屏幕**，不是这一局实际渲染的区域。
+    ///   iPhone Duo 是双屏设备（内屏 7.6" / 外屏 5.4"），`UIScreen` 在它上面
+    ///   语义不明确，而且分屏 / 窗口化时也和渲染区不一致。
+    ///   这个字段取的是绘制缓冲的真实尺寸，配合 `model` 就能反推姿态
+    ///   （内屏 / 外屏 / 横竖），是 Duo 数据能分层的唯一依据。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<[f32; 2]>,
 }
 
 /* 全局设备信息 —— 由 phira 侧在启动时采集一次并写入。
@@ -443,6 +453,10 @@ pub fn build_payload(
                 gyro: motion_summary(),
                 lat,
                 lon,
+                /* 实际渲染尺寸：这一局真正画了多少像素。
+                   与 `screen`（设备屏幕）不同，它反映当前姿态与窗口，
+                   是 Duo 内外屏 / 分屏数据能分层的依据。 */
+                view: Some([macroquad::window::screen_width(), macroquad::window::screen_height()]),
                 ..device
             }
         },

@@ -52,7 +52,9 @@ impl Object {
     #[inline]
     pub fn now_translation(&self, res: &Resource) -> Vector {
         let mut tr = self.translation.now();
-        tr.y /= res.aspect_ratio;
+        /* ⚠ 除的是**谱面**比例，不是视图比例。竖屏铺满时两者不等，
+           用错会让音符纵向位置与判定线对不上。 */
+        tr.y /= res.chart_aspect;
         tr
     }
 
