@@ -43,14 +43,22 @@ pub fn install() -> &'static str {
 
 #[cfg(target_os = "ios")]
 unsafe fn fill_ios(info: &mut DeviceInfo) {
-    use objc2_foundation::NSString;
+    use objc2::MainThreadMarker;
     use objc2_ui_kit::{UIScreen, UIDevice};
 
     /* ── 系统版本 ──
        UIDevice.systemVersion 给的是 "17.0" 这种。
        ⚠ 不要用 operatingSystemVersionString —— 那串在部分系统上是
          "Version 17.0 (Build 21A329)" 这种英文长句，长短不一且不可解析。 */
-    let dev = UIDevice::currentDevice();
+    /* ⚠ objc2-ui-kit 0.3 起，所有 UI 相关的构造都要求 MainThreadMarker ——
+       它在类型层面保证这些调用发生在主线程（UIKit 不是线程安全的）。
+       device::install() 由 quad_main 调用，本来就在主线程，所以这里必然成功。
+       拿不到只能是调用方写错了，此时直接放弃采集，不影响游戏启动。 */
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+
+    let dev = UIDevice::currentDevice(mtm);
     let ver = dev.systemVersion();
     let ver_str = ver.to_string();
     if !ver_str.is_empty() {
@@ -68,7 +76,7 @@ unsafe fn fill_ios(info: &mut DeviceInfo) {
     /* ── 屏幕 ──
        bounds 是**逻辑点**，scale 是像素比。
        两者一起才能还原真实分辨率：logical × scale = physical。 */
-    let screen = UIScreen::mainScreen();
+    let screen = UIScreen::mainScreen(mtm);
     let bounds = screen.bounds();
     let scale = screen.scale() as f32;
     let w = bounds.size.width as f32;
