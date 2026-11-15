@@ -306,6 +306,19 @@ impl Scene for EndingScene {
                 .draw_using(&BOLD_FONT);
             self.btn_detail.set(ui, r.feather(0.02));
 
+            /* 上传状态常驻显示。
+               之前只用 show_message 弹一条，一闪就没了 —— 玩家不知道自己传上去没有，
+               只能反复点退出看那句「尚在上传」来试探。touch() 里已经拦了退出，
+               但看不见「正在传」这件事本身，拦了也像卡住。 */
+            if self.upload_task.is_some() {
+                ui.text(tl!("uploading"))
+                    .pos(1. - 0.02, br.bottom() - 0.06)
+                    .anchor(1., 0.)
+                    .size(0.4)
+                    .color(semi_white(0.65))
+                    .draw();
+            }
+
             let res = &self.result;
 
             let y = y - 0.07;
