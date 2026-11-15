@@ -46,11 +46,15 @@ pub fn install() -> &'static str {
     /* 定位会**触发系统授权弹窗** —— 放在 quad_main 里，用户一进游戏就看到。
        拒绝后 get() 恒为 None，不影响任何流程。 */
     crate::location::start();
-    prpr::huamei::set_motion_hook(crate::motion::sample_frame);
-    prpr::huamei::set_motion_begin_hook(crate::motion::begin_round);
-    prpr::huamei::set_motion_summary_hook(crate::motion::finish_round);
-    prpr::huamei::set_safe_area_hook(safe_area_px);
-    prpr::huamei::set_location_hook(crate::location::coord_for_upload);
+    /* 平台能力一次性注册。少写一个字段编译不过 —— 这是刻意的：
+       以前是 5 个独立的 set_xxx_hook，忘了其中一个只会在运行时静默空操作。 */
+    prpr::huamei::install_hooks(prpr::huamei::PlatformHooks {
+        sample_motion: crate::motion::sample_frame,
+        begin_round: crate::motion::begin_round,
+        motion_summary: crate::motion::finish_round,
+        location: crate::location::coord_for_upload,
+        safe_area: safe_area_px,
+    });
 
     let has = info.os_version.is_some() || info.model.is_some() || info.screen.is_some();
     tracing::info!(

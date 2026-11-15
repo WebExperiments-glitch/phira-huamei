@@ -109,55 +109,68 @@ pub fn device_info() -> DeviceInfo {
     DEVICE_INFO.get().cloned().unwrap_or_default()
 }
 
-/* ── 陀螺仪采样钩子 ──────────────────────────────────────────
-   与 DEVICE_INFO 同样的思路：prpr 定义入口，phira 注册实现。
+/* ── 平台能力注册表 ──────────────────────────────────────────
+   prpr 不认识 UIKit / CoreMotion / CLLocation，也**不能**依赖 phira
+   （那会循环依赖）。所以平台侧的能力从这里注入。
 
-   ⚠ 用函数指针而不是让 prpr 依赖 phira（那会循环依赖）。
-     代价是每帧多一次间接跳转，可忽略。 */
-type MotionHook = fn();
-static MOTION_HOOK: std::sync::atomic::AtomicPtr<()> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+   【为什么是一个结构体，而不是 5 个 set_xxx_hook】
+     · 以前每个钩子各有一个 AtomicPtr + setter + unsafe transmute（5 份），
+       注册点散在 device.rs 里 —— **加了钩子忘了注册就是运行时静默空操作**。
+       现在构造 `PlatformHooks` 时少写一个字段直接编译失败。
+     · 5 处 `unsafe { transmute }` 全部消失，只剩普通函数调用。
+     · 「没装」这件事只在一个地方体现（`hooks()` 返回 None），
+       不用再去猜某个能力到底是没实现还是没注册。 */
+pub struct PlatformHooks {
+    /// 每帧采一帧陀螺仪
+    pub sample_motion: fn(),
+    /// 对局开始（含重开）时清零采样器
+    pub begin_round: fn(),
+    /// 结算时取本局摘要 [均值, 标准差, 峰值]，rad/s
+    pub motion_summary: fn() -> Option<[f32; 3]>,
+    /// 城市级坐标 [lat, lon]；未授权 / 未定上位为 None
+    pub location: fn() -> Option<[f64; 2]>,
+    /// 安全区 (上, 左, 下, 右)，像素
+    pub safe_area: fn() -> (f32, f32, f32, f32),
+}
 
-/// 由 phira 侧注册「采一帧」的实现。
-pub fn set_motion_hook(f: MotionHook) {
-    MOTION_HOOK.store(f as *mut (), std::sync::atomic::Ordering::Relaxed);
+static HOOKS: std::sync::OnceLock<PlatformHooks> = std::sync::OnceLock::new();
+
+/// 由 phira 侧在启动时调用一次。重复调用以第一次为准。
+pub fn install_hooks(h: PlatformHooks) {
+    let _ = HOOKS.set(h);
+}
+
+fn hooks() -> Option<&'static PlatformHooks> {
+    HOOKS.get()
 }
 
 /// 每帧调用一次。未注册时是空操作。
 pub fn sample_motion() {
-    let p = MOTION_HOOK.load(std::sync::atomic::Ordering::Relaxed);
-    if p.is_null() {
-        return;
+    if let Some(h) = hooks() {
+        (h.sample_motion)();
     }
-    // SAFETY: 只接受 set_motion_hook 注册的函数指针，类型一致。
-    let f: MotionHook = unsafe { std::mem::transmute(p) };
-    f();
 }
 
-/* ── 安全区钩子 ──────────────────────────────────────────────
-   iPhone Duo（2026-09）的内屏横屏与外屏会把状态栏挪成**一侧的竖条**
-   （约 84pt，放时钟/信号），刘海机横屏同理，而且左右**不对称**。
-   平台层（miniquad）已经把它读出来了，prpr 不认识 UIKit，
-   所以照旧用函数指针转一手：phira 注册取值的实现。
+/// 对局开始时调用（含重开）。未注册时是空操作。
+pub fn begin_round_motion() {
+    if let Some(h) = hooks() {
+        (h.begin_round)();
+    }
+}
 
-   取不到时返回全 0 —— 桌面端、非 iOS、老系统都是这条路。 */
-type SafeAreaHook = fn() -> (f32, f32, f32, f32);
-static SAFE_AREA_HOOK: std::sync::atomic::AtomicPtr<()> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+/// 取本局的陀螺仪摘要。未注册或没采到都返回 None。
+pub fn motion_summary() -> Option<[f32; 3]> {
+    hooks().and_then(|h| (h.motion_summary)())
+}
 
-pub fn set_safe_area_hook(f: SafeAreaHook) {
-    SAFE_AREA_HOOK.store(f as *mut (), std::sync::atomic::Ordering::Relaxed);
+/// 当前城市级坐标。未注册或未授权都返回 None。
+pub fn location_coord() -> Option<[f64; 2]> {
+    hooks().and_then(|h| (h.location)())
 }
 
 /// 当前安全区（上, 左, 下, 右），单位像素。未注册或取不到时全 0。
 pub fn safe_area() -> (f32, f32, f32, f32) {
-    let p = SAFE_AREA_HOOK.load(std::sync::atomic::Ordering::Relaxed);
-    if p.is_null() {
-        return (0., 0., 0., 0.);
-    }
-    // SAFETY: 只接受 set_safe_area_hook 注册的函数指针，类型一致。
-    let f: SafeAreaHook = unsafe { std::mem::transmute(p) };
-    f()
+    hooks().map(|h| (h.safe_area)()).unwrap_or((0., 0., 0., 0.))
 }
 
 /// 把整屏视口按安全区**左右**缩进。
@@ -178,78 +191,6 @@ pub fn safe_viewport(vp: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
         return vp;
     }
     (x + l, y, w - l - r, h)
-}
-
-/* ── 对局开始钩子 ────────────────────────────────────────────
-   ⚠ 2026-11-15 补：原设计里 `phira::motion::begin_round()` 是对局开始时
-     调用的，但那函数**从来没有被任何人调用**（全仓库零引用）。于是
-     `Sampler::running` 恒为 false，`push()` 每帧第一行就 return，样本数
-     永远是 0，`summarize()` 因 `< 10` 返回 None。
-
-     结果：服务端 28 条数据 gyro 完整率 0.0%，**全程没有任何报错** ——
-     和「设备没有陀螺仪」在日志里长得一模一样。
-
-     现在由 game.rs 的 reset! 宏在每局开始（含重开）时调用这个钩子。 */
-type MotionBeginHook = fn();
-static MOTION_BEGIN_HOOK: std::sync::atomic::AtomicPtr<()> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
-
-/// 由 phira 侧注册「开局清零」的实现。
-pub fn set_motion_begin_hook(f: MotionBeginHook) {
-    MOTION_BEGIN_HOOK.store(f as *mut (), std::sync::atomic::Ordering::Relaxed);
-}
-
-/// 对局开始时调用（含重开）。未注册时是空操作。
-pub fn begin_round_motion() {
-    let p = MOTION_BEGIN_HOOK.load(std::sync::atomic::Ordering::Relaxed);
-    if p.is_null() {
-        return;
-    }
-    // SAFETY: 只接受 set_motion_begin_hook 注册的函数指针，类型一致。
-    let f: MotionBeginHook = unsafe { std::mem::transmute(p) };
-    f();
-}
-
-/* ── 陀螺仪摘要钩子 ────────────────────────────────────────── */
-type MotionSummaryHook = fn() -> Option<[f32; 3]>;
-static MOTION_SUMMARY_HOOK: std::sync::atomic::AtomicPtr<()> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
-
-pub fn set_motion_summary_hook(f: MotionSummaryHook) {
-    MOTION_SUMMARY_HOOK.store(f as *mut (), std::sync::atomic::Ordering::Relaxed);
-}
-
-/// 取本局的陀螺仪摘要。未注册或没采到都返回 None。
-pub fn motion_summary() -> Option<[f32; 3]> {
-    let p = MOTION_SUMMARY_HOOK.load(std::sync::atomic::Ordering::Relaxed);
-    if p.is_null() {
-        return None;
-    }
-
-    // SAFETY: 只接受 set_motion_summary_hook 注册的函数指针，类型一致。
-    let f: MotionSummaryHook = unsafe { std::mem::transmute(p) };
-    f()
-}
-
-/* ── 定位钩子 ────────────────────────────────────────
-   第三个同款钩子。理由一样：prpr 不能依赖 phira。
-   返回城市级 [lat, lon]；未授权 / 未定上位为 None。 */
-type LocHook = fn() -> Option<[f64; 2]>;
-static LOC_HOOK: std::sync::atomic::AtomicPtr<()> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
-
-pub fn set_location_hook(f: LocHook) {
-    LOC_HOOK.store(f as *mut (), std::sync::atomic::Ordering::Relaxed);
-}
-
-pub fn location_coord() -> Option<[f64; 2]> {
-    let p = LOC_HOOK.load(std::sync::atomic::Ordering::Relaxed);
-    if p.is_null() {
-        return None;
-    }
-    // SAFETY: 只接受 set_location_hook 注册的函数指针，类型一致。
-    let f: LocHook = unsafe { std::mem::transmute(p) };
-    f()
 }
 
 /* ── 触控落点热度图 ──────────────────────────────────
@@ -316,6 +257,8 @@ pub struct HuameiPayload {
     pub chart_level: String,
     /// sha256(谱面文件字节) —— 与 Phira 官方 `/chart/{id}/verify-cksum` 同一个算法。
     /// ⚠ 由 **phira 侧**在谱面加载时算好填入（prpr 拿不到原始谱面字节）。
+    /// 没有就**不出现**这个键（而不是 `null`）—— 与旧客户端的上报字节保持一致。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chart_digest: Option<String>,
     pub chart_notes: u32,
 
@@ -467,6 +410,63 @@ pub fn build_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 上报契约：这些键**必须**出现在序列化结果里。
+    ///
+    /// 【为什么需要这条测试】
+    ///   这个载荷曾经有两套结构体（prpr 的 `HuameiPayload` 和 phira 手写的
+    ///   `UploadBody`），加字段只改一处 ⇒ 客户端"传了"、服务端收到 null、
+    ///   全程无报错。`max_touch_points` 和 `device` 各踩过一次。
+    ///
+    ///   现在 phira 直接上传 `HuameiPayload`，结构体本身就唯一了；这条测试
+    ///   再钉住"这些键不能消失"。服务端 `lib/hm.mjs` 的 validatePlay 认的就是
+    ///   这批名字，改服务端字段时两边一起改。
+    #[test]
+    fn payload_keeps_wire_contract() {
+        let p = HuameiPayload {
+            client_ver: "x".into(),
+            judge_ver: JUDGE_VER,
+            chart_id: 1,
+            chart_level: "IN 1".into(),
+            chart_digest: Some("d".into()),
+            chart_notes: 2,
+            score: 3,
+            accuracy: 4.0,
+            max_combo: 5,
+            counts: [1, 0, 0, 0],
+            speed: 6.0,
+            mods: 0,
+            keyboard: false,
+            max_touch_points: 2,
+            played_at: 7,
+            judge: "j".into(),
+            device: DeviceInfo::default(),
+            touch_heat: Some("h".into()),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&p.to_json_bytes().unwrap()).unwrap();
+        for k in [
+            "client_ver",
+            "judge_ver",
+            "chart_id",
+            "chart_level",
+            "chart_digest",
+            "chart_notes",
+            "score",
+            "accuracy",
+            "max_combo",
+            "counts",
+            "speed",
+            "mods",
+            "keyboard",
+            "max_touch_points",
+            "played_at",
+            "judge",
+            "device",
+            "touch_heat",
+        ] {
+            assert!(v.get(k).is_some(), "上报载荷丢了字段：{k}");
+        }
+    }
 
     #[test]
     fn offset_clamped_and_miss_is_unknown() {

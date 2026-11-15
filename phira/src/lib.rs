@@ -30,7 +30,9 @@ mod resource;
 mod scene;
 mod tabs;
 mod tags;
-mod telem;
+/// 诊断日志（Documents 落盘）。`pub` 是因为 `phira-main` 的 panic hook
+/// 也要走同一套路径策略 —— 两份实现必然分叉。
+pub mod telem;
 mod threed;
 mod uml;
 

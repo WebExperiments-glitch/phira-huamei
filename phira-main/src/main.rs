@@ -13,29 +13,13 @@
 ///   桌面端走同一条路径也行（HOME 是真实家目录），日志落在 ~/Documents。
 /// 依次试可写目录：HOME/Documents → TMPDIR → 当前目录。
 /// iOS 侧载下 HOME 可能为空（2026-11-06 实测 Documents 全空），不能只依赖它。
+///
+/// ⚠ 路径策略**不在这个文件里** —— 唯一实现是 `phira::telem::log_dir()`，
+///   与陀螺仪日志共用。两处各写一份的下场是日志分裂到不同目录。
 fn panic_log_dir() -> Option<std::path::PathBuf> {
-    let mut cands: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(h) = std::env::var("HOME") {
-        if !h.is_empty() {
-            cands.push(std::path::PathBuf::from(h).join("Documents"));
-        }
-    }
-    if let Ok(h) = std::env::var("HOME") {
-        if !h.is_empty() {
-            cands.push(std::path::PathBuf::from(h).join("Library").join("Caches"));
-        }
-    }
-    if let Ok(t) = std::env::var("TMPDIR") {
-        if !t.is_empty() {
-            cands.push(std::path::PathBuf::from(t));
-        }
-    }
-    cands.push(std::path::PathBuf::from("."));
-    for d in cands {
-        if std::fs::create_dir_all(&d).is_ok() {
-            if std::fs::OpenOptions::new().create(true).append(true).open(d.join("panic.log")).is_ok() {
-                return Some(d);
-            }
+    if let Some(d) = phira::telem::log_dir() {
+        if std::fs::OpenOptions::new().create(true).append(true).open(d.join("panic.log")).is_ok() {
+            return Some(d);
         }
     }
     None

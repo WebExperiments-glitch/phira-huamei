@@ -13,6 +13,32 @@
 //!   这个文件名已经在真机上验证过、也写在交接文档里了，改名只会让下一个人
 //!   两头找。内容以后可以不止陀螺仪。
 
+use std::path::PathBuf;
+
+/// 日志目录 —— **全 crate 唯一**的一份路径策略。
+///
+/// 之前这里和 `phira-main/src/main.rs` 的 `panic_log_dir()` 各写了一份，
+/// 一处改了另一处不会跟着改，日志就会分裂到两个目录里。
+/// 现在两边都走这个函数。
+///
+/// 顺序：HOME/Documents（用户在「文件」App 里看得见）→ HOME/Library/Caches
+/// → TMPDIR → 都没有就 None（调用方自己决定退化成只打 NSLog）。 */
+pub fn log_dir() -> Option<PathBuf> {
+    let mut cands: Vec<PathBuf> = Vec::new();
+    if let Ok(h) = std::env::var("HOME") {
+        if !h.is_empty() {
+            cands.push(PathBuf::from(&h).join("Documents"));
+            cands.push(PathBuf::from(&h).join("Library").join("Caches"));
+        }
+    }
+    if let Ok(t) = std::env::var("TMPDIR") {
+        if !t.is_empty() {
+            cands.push(PathBuf::from(t));
+        }
+    }
+    cands.into_iter().find(|d| std::fs::create_dir_all(d).is_ok())
+}
+
 /// 一条普通诊断。iOS 上同时落盘。
 pub fn note(msg: impl AsRef<str>) {
     let msg = msg.as_ref();
@@ -32,31 +58,12 @@ pub fn note_warn(msg: impl AsRef<str>) {
 #[cfg(target_os = "ios")]
 mod sink {
     use std::io::Write;
-    use std::path::PathBuf;
-
-    /// 与 `phira-main/src/main.rs` 的 `panic_log_dir()` 同一套候选目录：
-    /// HOME/Documents 优先（用户可见），其次 Caches、TMPDIR。
-    fn dir() -> Option<PathBuf> {
-        let mut cands: Vec<PathBuf> = Vec::new();
-        if let Ok(h) = std::env::var("HOME") {
-            if !h.is_empty() {
-                cands.push(PathBuf::from(&h).join("Documents"));
-                cands.push(PathBuf::from(&h).join("Library").join("Caches"));
-            }
-        }
-        if let Ok(t) = std::env::var("TMPDIR") {
-            if !t.is_empty() {
-                cands.push(PathBuf::from(t));
-            }
-        }
-        cands.into_iter().find(|d| std::fs::create_dir_all(d).is_ok())
-    }
 
     /// 单文件上限 256 KB，超了就轮转一份。沙盒空间有限，真要看也只看最近几局。
     const MAX_BYTES: u64 = 256 * 1024;
 
     pub fn append(line: &str) {
-        let Some(d) = dir() else { return };
+        let Some(d) = super::log_dir() else { return };
         let path = d.join("motion.log");
         if let Ok(m) = std::fs::metadata(&path) {
             if m.len() > MAX_BYTES {
