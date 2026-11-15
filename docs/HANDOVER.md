@@ -166,16 +166,30 @@ prpr::huamei::set_location_hook(...)
 
 **难点**：重建后 `music.position()` 会归零，得设计「恢复到哪个时间点」，否则歌曲从头开始。**这是设计决策，不是纯编码。**
 
-**② `gyro` 一直是 null**（采不到）
+**② `gyro` 一直是 null** —— **根因已定位（2026-11-15 晚），待真机验证**
 
-`beta.20` 改成懒启动（第一次 `sample_frame` 时才启动，那时 run loop 已跑起来），但仍然没数据。
+不是 CoreMotion 的问题，是**我们自己的采样器从来没被启动过**：
 
-可能原因：
-- `isDeviceMotionAvailable` 返回 false（理论上 iPad 有陀螺仪）
-- `startDeviceMotionUpdates` 没真正生效
-- `deviceMotion()` 恒为 None
+`phira/src/motion.rs` 的 `begin_round()` 定义了，但**全仓库零调用**。
+于是 `Sampler::running` 恒为 `false`，`push()` 每帧第一行就 `return`，
+样本数永远是 0，`summarize()` 因 `< 10` 返回 `None`。
 
-**诊断靠日志**：`beta.20` 之后有 `motion:` 开头的三行日志，看走哪一支。日志在 `data/huamei-login.log`。
+关键在于这是一次**完全静默的失败**：不报错、不 warning、字段就是 null，
+和「设备没有陀螺仪」「授权被拒」在载荷里一模一样 —— 28 条数据 gyro 全空，
+此前两版都在猜 CoreMotion 的启动时机，方向偏了。
+
+修法（三处）：
+
+- `prpr::huamei` 新增 `set_motion_begin_hook` / `begin_round_motion()`
+- `game.rs` 的 `reset!` 宏里调用它 —— 每局开始（含重开）清零并置 `running=true`
+- `phira::device::install` 注册 `motion::begin_round`
+
+同时补了诊断：`isDeviceMotionAvailable` / `start` 之后的 `isDeviceMotionActive`
+/ 首个样本帧号 / 结算时的 `frames + no_data + running + samples`。
+
+⚠ **日志不再只看 NSLog**：Windows 上没有 Mac，NSLog 读不到，这是这个 bug
+拖了两版的真正原因。现在同时写 `Documents/motion.log`（轮转上限 256 KB），
+与 `panic.log` 同目录，「文件」App 可直接导出。
 
 **③ 竖屏适配只做了一半**
 

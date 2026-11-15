@@ -169,6 +169,10 @@ macro_rules! reset {
         $tm.reset();
         $self.last_update_time = $tm.now();
         $self.state = State::Starting;
+        /* 陀螺仪采样器清零并开始累积。
+           ⚠ 必须在这里（而不是结算时）——否则 Sampler::running 一直是 false，
+             每帧样本都被 push() 丢掉，结算永远是 None。见 huamei.rs 的注释。 */
+        crate::huamei::begin_round_motion();
         $self.fps_frame_count = 0;
         $self.fps_total_time = 0.0;
         $self.fps_last_frame_time = $tm.real_time();

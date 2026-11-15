@@ -47,6 +47,7 @@ pub fn install() -> &'static str {
        拒绝后 get() 恒为 None，不影响任何流程。 */
     crate::location::start();
     prpr::huamei::set_motion_hook(crate::motion::sample_frame);
+    prpr::huamei::set_motion_begin_hook(crate::motion::begin_round);
     prpr::huamei::set_motion_summary_hook(crate::motion::finish_round);
     prpr::huamei::set_location_hook(crate::location::coord_for_upload);
 

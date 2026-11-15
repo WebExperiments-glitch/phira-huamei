@@ -45,9 +45,9 @@ pub const API_URL: &str = match option_env!("HUAMEI_API_BASE") {
 /// **改动客户端行为就 +1**，否则线上出问题时分不清批次。
 /// ⚠ 服务端**不**用它做任何门控（只存不判），所以升级无兼容风险。
 ///   它长期停在 `huamei.1`，中间攒了 9 次改动都没动 —— 别学。
-/// 本次 +1：结算界面加「早/晚偏差条」与「失分构成」，
-/// 并修掉 `PlayResult.std` 写死为 0（那个「ERROR ±Nms」从来都显示 ±0）。
-pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.30";
+/// 本次 +1：修 `gyro` 恒为 null（`begin_round` 从未被调用，采样器一直没启动），
+/// 并把陀螺仪诊断写进 `Documents/motion.log`。
+pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.31";
 
 /// 站点根 —— 取谱代理、云端鉴权、成绩上报都挂在它下面。
 ///

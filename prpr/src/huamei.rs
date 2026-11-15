@@ -124,6 +124,36 @@ pub fn sample_motion() {
     f();
 }
 
+/* ── 对局开始钩子 ────────────────────────────────────────────
+   ⚠ 2026-11-15 补：原设计里 `phira::motion::begin_round()` 是对局开始时
+     调用的，但那函数**从来没有被任何人调用**（全仓库零引用）。于是
+     `Sampler::running` 恒为 false，`push()` 每帧第一行就 return，样本数
+     永远是 0，`summarize()` 因 `< 10` 返回 None。
+
+     结果：服务端 28 条数据 gyro 完整率 0.0%，**全程没有任何报错** ——
+     和「设备没有陀螺仪」在日志里长得一模一样。
+
+     现在由 game.rs 的 reset! 宏在每局开始（含重开）时调用这个钩子。 */
+type MotionBeginHook = fn();
+static MOTION_BEGIN_HOOK: std::sync::atomic::AtomicPtr<()> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// 由 phira 侧注册「开局清零」的实现。
+pub fn set_motion_begin_hook(f: MotionBeginHook) {
+    MOTION_BEGIN_HOOK.store(f as *mut (), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 对局开始时调用（含重开）。未注册时是空操作。
+pub fn begin_round_motion() {
+    let p = MOTION_BEGIN_HOOK.load(std::sync::atomic::Ordering::Relaxed);
+    if p.is_null() {
+        return;
+    }
+    // SAFETY: 只接受 set_motion_begin_hook 注册的函数指针，类型一致。
+    let f: MotionBeginHook = unsafe { std::mem::transmute(p) };
+    f();
+}
+
 /* ── 陀螺仪摘要钩子 ────────────────────────────────────────── */
 type MotionSummaryHook = fn() -> Option<[f32; 3]>;
 static MOTION_SUMMARY_HOOK: std::sync::atomic::AtomicPtr<()> =
