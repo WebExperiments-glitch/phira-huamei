@@ -109,6 +109,8 @@ sasa = { workspace = true, default-features = false, features = ["oboe"] }
 # 直接用 libc 更稳 —— 这个 crate 本来就在依赖树里。
 libc = "0.2"
 objc2 = { workspace = true }
+objc2-core-location = "0.3.2"
+objc2-core-motion = "0.3.2"
 objc2-foundation = { workspace = true }
 objc2-ui-kit = { workspace = true }
 

@@ -852,31 +852,16 @@ impl GeneralList {
             render_title(ui, tl!("item-anys-gateway"), Some(tl!("item-anys-gateway-sub")));
             self.anys_gateway_btn.render_text(ui, rr, t, &data.anys_gateway, 0.4, false);
         }
-        // ── 【huamei】账号行 ──
-        // 标签在进 item! 之前算好（后面要可变借 self.huamei_btn，不能同时持有它的字段借用）
-        //
-        // 【文案规矩】未登录那一档要**说清楚不用登录也能玩** ——
-        // 不然玩家会以为不登录就进不去，那就白白挡掉了一批数据。
-        let huamei_label: String = if self.huamei_stage.busy() {
-            "…".into()
-        } else if matches!(self.huamei_stage, HuameiStage::WaitPassword { .. }) {
-            "等待密码…".into()
-        } else if let Some(email) = &data.huamei_email {
-            format!("{email} · 退出")
-        } else {
-            "注册 / 登录".into()
-        };
-        item! {
-            render_title(
-                ui,
-                Cow::Borrowed("huamei 账号（可选）"),
-                Some(Cow::Borrowed(
-                    "不登录也能正常玩；登录只多做一件事：把每局的逐音符判定传上来，\
-                     用于分析你在这张谱上哪里失分。第一次填邮箱+密码注册，之后只需密码。",
-                )),
-            );
-            self.huamei_btn.render_text(ui, rr, t, &huamei_label, 0.4, false);
-        }
+        /* 【已移除 2026-11-15】原「huamei 账号（可选）」设置行。
+
+           删掉的理由：登录入口已经在主页（点此登录 P.H.M. 账号），
+           设置页再放一个重复的只会让人以为这是两套账号。
+
+           ⚠ 只删了**渲染**，没有删背后的状态机（huamei_btn / huamei_stage /
+             huamei_task / huamei_code_task 及其 touch 分支）。
+             按钮不渲染就点不到，那些代码是死路径但没有害处；
+             真要清干净得连着 touch() 里那 60 行一起删，
+             那属于重构不属于修 UI —— 留待下次。 */
         self.lang_btn.render_top(ui, t, 1.);
         (w, h)
     }

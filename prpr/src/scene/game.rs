@@ -865,6 +865,20 @@ impl Scene for GameScene {
     }
 
     fn update(&mut self, tm: &mut TimeManager) -> Result<()> {
+        /* 陀螺仪采一帧。**必须在游戏循环里**而不是结算时读一次：
+           我们要的是「这一局打的过程中手稳不稳」，不是「结束时那一瞬间」。
+           未注册实现时是空操作（非 iOS / 采样器启动失败）。 */
+        crate::huamei::sample_motion();
+
+        /* 触控落点：只记**按下那一刻**的坐标。
+           ⚠ 不能记每一帧的触点 —— 按住不动的手指会每帧都被算一次，
+             600 个音符的谱会出现几万次重复计数，热度图彻底失真。
+           ⚠ 坐标系是 -1..1（prpr 的 UI 空间），转成 0..1 再交给热度图。 */
+        for t in crate::judge::Judge::get_touches() {
+            if matches!(t.phase, TouchPhase::Started) {
+                crate::huamei::record_touch((t.position.x + 1.) / 2., (t.position.y + 1.) / 2.);
+            }
+        }
         self.offset_analysis
             .update(&self.chart, &self.res, self.info_offset, tm.real_time() as f32);
 

@@ -86,6 +86,8 @@ struct UploadBody<'a> {
        以后给 HuameiPayload 加字段，必须同时改这里，否则又是静默丢失。 */
     max_touch_points: u8,
     device: prpr::huamei::DeviceInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    touch_heat: Option<String>,
 }
 
 fn bare_client() -> reqwest::Client {
@@ -685,6 +687,7 @@ pub async fn upload_play(payload_json: &[u8], chart_digest: Option<String>) -> R
         judge: &p.judge,
         max_touch_points: p.max_touch_points,
         device: p.device.clone(),
+        touch_heat: p.touch_heat.clone(),
     };
     debug!(
         "huamei: 上报谱面 {} [{}] {} 分 {} 个音符",

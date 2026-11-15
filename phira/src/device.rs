@@ -40,6 +40,16 @@ pub fn install() -> &'static str {
        device 全是 null —— 但「采集失败」和「采集成功但字段没填」在
        上报载荷里长得一模一样（都是 {}），完全没法区分。
        这里把三件事都记下来：拿到几个字段、具体值、是否写入全局。 */
+    /* 注册陀螺仪钩子。start() 幂等，采不到（无陀螺仪/被拒）时 AVAILABLE
+       保持 false，sample_motion 内部会直接返回，不影响帧率。 */
+    crate::motion::start();
+    /* 定位会**触发系统授权弹窗** —— 放在 quad_main 里，用户一进游戏就看到。
+       拒绝后 get() 恒为 None，不影响任何流程。 */
+    crate::location::start();
+    prpr::huamei::set_motion_hook(crate::motion::sample_frame);
+    prpr::huamei::set_motion_summary_hook(crate::motion::finish_round);
+    prpr::huamei::set_location_hook(crate::location::coord_for_upload);
+
     let has = info.os_version.is_some() || info.model.is_some() || info.screen.is_some();
     tracing::info!(
         "device: os={:?} model={:?} screen={:?} -> {}",

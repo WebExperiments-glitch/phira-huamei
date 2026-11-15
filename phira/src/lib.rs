@@ -13,6 +13,8 @@ mod charts_view;
 mod client;
 mod data;
 mod device;
+mod location;
+mod motion;
 pub mod deeplink;
 /// 【huamei 新增】huamei 账号登录 + 成绩上报。
 /// 契约见 `docs/规范/数据飞轮契约.md`。

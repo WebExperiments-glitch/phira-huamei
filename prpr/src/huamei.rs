@@ -99,6 +99,128 @@ pub fn device_info() -> DeviceInfo {
     DEVICE_INFO.get().cloned().unwrap_or_default()
 }
 
+/* ── 陀螺仪采样钩子 ──────────────────────────────────────────
+   与 DEVICE_INFO 同样的思路：prpr 定义入口，phira 注册实现。
+
+   ⚠ 用函数指针而不是让 prpr 依赖 phira（那会循环依赖）。
+     代价是每帧多一次间接跳转，可忽略。 */
+type MotionHook = fn();
+static MOTION_HOOK: std::sync::atomic::AtomicPtr<()> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// 由 phira 侧注册「采一帧」的实现。
+pub fn set_motion_hook(f: MotionHook) {
+    MOTION_HOOK.store(f as *mut (), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 每帧调用一次。未注册时是空操作。
+pub fn sample_motion() {
+    let p = MOTION_HOOK.load(std::sync::atomic::Ordering::Relaxed);
+    if p.is_null() {
+        return;
+    }
+    // SAFETY: 只接受 set_motion_hook 注册的函数指针，类型一致。
+    let f: MotionHook = unsafe { std::mem::transmute(p) };
+    f();
+}
+
+/* ── 陀螺仪摘要钩子 ────────────────────────────────────────── */
+type MotionSummaryHook = fn() -> Option<[f32; 3]>;
+static MOTION_SUMMARY_HOOK: std::sync::atomic::AtomicPtr<()> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+pub fn set_motion_summary_hook(f: MotionSummaryHook) {
+    MOTION_SUMMARY_HOOK.store(f as *mut (), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 取本局的陀螺仪摘要。未注册或没采到都返回 None。
+pub fn motion_summary() -> Option<[f32; 3]> {
+    let p = MOTION_SUMMARY_HOOK.load(std::sync::atomic::Ordering::Relaxed);
+    if p.is_null() {
+        return None;
+    }
+
+    // SAFETY: 只接受 set_motion_summary_hook 注册的函数指针，类型一致。
+    let f: MotionSummaryHook = unsafe { std::mem::transmute(p) };
+    f()
+}
+
+/* ── 定位钩子 ────────────────────────────────────────
+   第三个同款钩子。理由一样：prpr 不能依赖 phira。
+   返回城市级 [lat, lon]；未授权 / 未定上位为 None。 */
+type LocHook = fn() -> Option<[f64; 2]>;
+static LOC_HOOK: std::sync::atomic::AtomicPtr<()> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+pub fn set_location_hook(f: LocHook) {
+    LOC_HOOK.store(f as *mut (), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn location_coord() -> Option<[f64; 2]> {
+    let p = LOC_HOOK.load(std::sync::atomic::Ordering::Relaxed);
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: 只接受 set_location_hook 注册的函数指针，类型一致。
+    let f: LocHook = unsafe { std::mem::transmute(p) };
+    f()
+}
+
+/* ── 触控落点热度图 ──────────────────────────────────
+
+   【为什么不是完整轨迹】
+     一局 600 个音符、每帧 2~4 个触点、60fps → 几十万个坐标点。
+     传上去没人能分析，存储也吃不消。
+
+   【8×8 网格能回答什么】
+     · 玩家主要按屏幕上半区还是下半区（谱面读法习惯）
+     · 是否偏一侧（右手/左手优势）
+     · 与判定偏移联合看：左下角区域是不是普遍偏早
+   64 个计数归一化到 u8，base64 后仅 88 字符。
+
+   ⚠ 只记**触点按下那一刻**（Started），不记移动中的帧 ——
+     否则按住不动的手指会被重复计数几千次，热度图直接失真。 */
+
+const HEAT_N: usize = 8;
+static TOUCH_HEAT: [std::sync::atomic::AtomicU32; HEAT_N * HEAT_N] = {
+    #[allow(clippy::declare_interior_mutable_const)]
+    const ZERO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    [ZERO; HEAT_N * HEAT_N]
+};
+
+/// 记一个触点。`x` / `y` 是归一化坐标（0..1，左上为原点）。
+/// 越界直接丢弃。
+pub fn record_touch(x: f32, y: f32) {
+    if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return;
+    }
+    let cx = ((x * HEAT_N as f32) as usize).min(HEAT_N - 1);
+    let cy = ((y * HEAT_N as f32) as usize).min(HEAT_N - 1);
+    TOUCH_HEAT[cy * HEAT_N + cx].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 清空（对局开始时调）。
+pub fn reset_touch_heat() {
+    for c in TOUCH_HEAT.iter() {
+        c.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// 取出并归一化成 [u8; 64]。全 0 时返回 None（没采到触控）。
+pub fn touch_heatmap() -> Option<[u8; HEAT_N * HEAT_N]> {
+    let raw: Vec<u32> = TOUCH_HEAT.iter().map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).collect();
+    let max = raw.iter().copied().max().unwrap_or(0);
+    if max == 0 {
+        return None;
+    }
+    let mut out = [0u8; HEAT_N * HEAT_N];
+    for (i, v) in raw.iter().enumerate() {
+        // 线性归一化到 0..255 —— 形状比绝对次数重要
+        out[i] = ((*v as f32 / max as f32) * 255.0).round() as u8;
+    }
+    Some(out)
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HuameiPayload {
     pub client_ver: String,
@@ -137,6 +259,11 @@ pub struct HuameiPayload {
     /// 用途是分层分析（机型性能 vs 判定偏差），不是用户画像。
     #[serde(default)]
     pub device: DeviceInfo,
+
+    /// base64(8×8 落点热度图，64 字节，已归一化到 0..255)。
+    /// None = 纯键盘玩法，没有触控数据。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub touch_heat: Option<String>,
 }
 
 impl HuameiPayload {
@@ -229,7 +356,21 @@ pub fn build_payload(
         max_touch_points: if keyboard { 0 } else { result.max_touch.min(255) as u8 },
         played_at: chrono::Utc::now().timestamp_millis(),
         judge: STANDARD.encode(&judge_bytes),
-        device,
+        /* 陀螺仪摘要填进 device.gyro —— 它是「这一局的身体状态」，
+           与环境信息同属 device 概念，不单开字段。 */
+        device: {
+            let (lat, lon) = match location_coord() {
+                Some([a, b]) => (Some(a), Some(b)),
+                None => (None, None),
+            };
+            DeviceInfo {
+                gyro: motion_summary(),
+                lat,
+                lon,
+                ..device
+            }
+        },
+        touch_heat: touch_heatmap().map(|h| STANDARD.encode(h)),
     }
 }
 
