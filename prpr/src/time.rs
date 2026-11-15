@@ -103,7 +103,21 @@ impl TimeManager {
     }
 
     pub fn resume(&mut self) {
-        self.start_time += self.real_time() - self.pause_time.take().unwrap();
+        /* ⚠ 没有 pause 过就不能 resume —— 这是合法状态，不是错误。
+           原来写的是 `self.pause_time.take().unwrap()`，在 iOS 上必然炸：
+           应用冷启动 / 从后台恢复时，系统直接进入 resume 路径，而此前
+           并没有走过 pause()，于是 pause_time 是 None。
+
+           后果极其隐蔽（2026-11-15 实机 375 条日志才挖出来）：
+             · prpr/src/time.rs:106 一次 panic
+             · 主 async 块（phira/src/lib.rs:386）future 中毒
+             · 之后每帧 `async fn resumed after panicking`，374 次
+             · 画面抽搐、黑块，但进程不死 —— 看着像显卡问题，其实是这里
+
+           pause_time 为空就什么都不做：时间基准本来就没被 pause 改过。 */
+        if let Some(pause_time) = self.pause_time.take() {
+            self.start_time += self.real_time() - pause_time;
+        }
         self.wait();
     }
 
