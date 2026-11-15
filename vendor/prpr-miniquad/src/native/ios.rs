@@ -216,7 +216,6 @@ pub fn define_glk_view_dlg() -> *const Class {
             n += 1;
             true
         });
-        }
         let _ = writeln!(f, "==========================================");
     }
 
