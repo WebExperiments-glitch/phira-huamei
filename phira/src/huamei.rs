@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    client::{basic_client_builder, HUAMEI_CLIENT_VER, HUAMEI_PUBLISHABLE_KEY, HUAMEI_REFERER, HUAMEI_SITE},
+    client::{basic_client_builder, HUAMEI_CLIENT_VER, HUAMEI_PUBLISHABLE_KEY, HUAMEI_REFERER, HUAMEI_SITE, with_sharecode},
     get_data,
 };
 
@@ -146,7 +146,9 @@ async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
     body: &T,
     token: Option<&str>,
 ) -> Result<R> {
-    let mut req = bare_client().post(url).json(body);
+    /* ⚠ 必须带 sharecode：平台把站点设成「需要分享码」后，所有请求（含 API）
+       裸访问都 403。见 client.rs 的 HUAMEI_SHARECODE 注释。 */
+    let mut req = bare_client().post(with_sharecode(url)).json(body);
     if let Some(t) = token {
         // ⚠ **`x-hm-token` 才是主用的那个** —— 实测托管边缘会把入站的
         //   `Authorization` 头吃掉/改掉（我们的服务端收到后解析出来根本不是一个
@@ -241,7 +243,7 @@ async fn account_call(
         body["code"] = serde_json::Value::String(c.to_owned());
     }
     let resp = bare_client()
-        .post(format!("{}/{}", hm_base(), path))
+        .post(with_sharecode(&format!("{}/{}", hm_base(), path)))
         .json(&body)
         .send()
         .await
@@ -323,7 +325,7 @@ pub async fn register(email: &str, password: &str, code: &str) -> Result<Step> {
 pub async fn send_code(email: &str, purpose: &str) -> Result<()> {
     let body = serde_json::json!({ "email": email, "purpose": purpose });
     let resp = bare_client()
-        .post(format!("{}/send-code", hm_base()))
+        .post(with_sharecode(&format!("{}/send-code", hm_base())))
         .json(&body)
         .send()
         .await

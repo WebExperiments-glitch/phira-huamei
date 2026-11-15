@@ -47,7 +47,7 @@ pub const API_URL: &str = match option_env!("HUAMEI_API_BASE") {
 ///   它长期停在 `huamei.1`，中间攒了 9 次改动都没动 —— 别学。
 /// 本次 +1：结算界面加「早/晚偏差条」与「失分构成」，
 /// 并修掉 `PlayResult.std` 写死为 0（那个「ERROR ±Nms」从来都显示 ±0）。
-pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.13";
+pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.14";
 
 /// 站点根 —— 取谱代理、云端鉴权、成绩上报都挂在它下面。
 ///
@@ -72,6 +72,28 @@ pub const HUAMEI_PUBLISHABLE_KEY: &str = "wbpk_TRm3Cbt5VeYHHDwUL854jr_5Xi69EqYG1
 ///   浏览器里跑 SDK 时这个头自动就有；原生客户端不发，
 ///   服务端就可能把我们当成**另一个 client**。
 pub const HUAMEI_REFERER: &str = "https://phm.app.workbuddy.host/";
+
+/// 部署平台的分享码。2026-11 起 phm.app.workbuddy.host 被设成「需要分享码」，
+/// **所有请求（含 API）裸访问一律 403** —— 见 phm-web/tools/fix-monitors.mjs
+/// 开头那段的记录（当时 BetterStack 探针全红，就是被这道门挡的）。
+///
+/// ⚠ 这是**访问门槛**，不是身份认证：它只证明「你知道这个码」，
+///   不区分是谁。真正的身份仍由 `x-hm-token` 那套负责。
+///   写进客户端意味着它随二进制扩散 —— 可以接受，因为它本来就是要给玩家的。
+pub const HUAMEI_SHARECODE: &str = "NXNUI4YAVG";
+
+/// 给任意 URL 补上 sharecode。已经有了就不重复加。
+///
+/// ⚠ 不要改成「拼在基址常量上」：`Client::request` 那边是
+///   `API_URL.to_string() + path` 的裸字符串拼接，基址带 query 会拼出
+///   `.../api/phira?sharecode=X/chart/1` 这种坏 URL。必须在**拼完之后**处理。
+pub fn with_sharecode(url: &str) -> String {
+    if url.contains("sharecode=") {
+        return url.to_owned();
+    }
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}sharecode={HUAMEI_SHARECODE}")
+}
 
 pub fn basic_client_builder() -> ClientBuilder {
     let policy = reqwest::redirect::Policy::custom(|attempt| {
@@ -235,7 +257,9 @@ impl Client {
     }
 
     pub fn request(method: Method, path: impl AsRef<str>) -> RequestBuilder {
-        CLIENT.load().request(method, API_URL.to_string() + path.as_ref())
+        CLIENT
+            .load()
+            .request(method, with_sharecode(&(API_URL.to_string() + path.as_ref())))
     }
 
     pub fn clear_cache<T: Object + 'static>(id: i32) -> Result<bool> {

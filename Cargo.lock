@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "phira"
-version = "0.8.2-beta.8"
+version = "0.8.2-beta.9"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3576,7 +3576,7 @@ dependencies = [
 
 [[package]]
 name = "phira-main"
-version = "0.8.2-beta.8"
+version = "0.8.2-beta.9"
 dependencies = [
  "phira",
 ]
@@ -3788,7 +3788,7 @@ dependencies = [
 
 [[package]]
 name = "prpr"
-version = "0.8.2-beta.8"
+version = "0.8.2-beta.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3859,7 +3859,7 @@ dependencies = [
 
 [[package]]
 name = "prpr-auto-offset"
-version = "0.8.2-beta.8"
+version = "0.8.2-beta.9"
 dependencies = [
  "prpr-avc",
  "rayon",
@@ -3869,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "prpr-auto-offset-cli"
-version = "0.8.2-beta.8"
+version = "0.8.2-beta.9"
 dependencies = [
  "anyhow",
  "clap",
