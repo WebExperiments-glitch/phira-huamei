@@ -609,14 +609,42 @@ impl Resource {
             (x + ((w - rw) / 2.).round() as i32, y + ((h - rh) / 2.).round() as i32, rw as i32, rh as i32)
         }
         let aspect_ratio = self.config.aspect_ratio.unwrap_or(self.info.aspect_ratio);
-        if self.info.force_aspect_ratio {
-            self.aspect_ratio = aspect_ratio;
-            self.camera.viewport = Some(viewport(aspect_ratio, vp));
+        let screen_ar = vp.2 as f32 / vp.3 as f32;
+
+        /* ── 竖屏处理（2026-11-15）──
+         *
+         * 【原来的行为】
+         *   self.aspect_ratio = aspect_ratio.min(screen_ar)
+         *   竖屏时 screen_ar ≈ 0.56 < 谱面 1.78 → 取 0.56
+         *   → zoom.y = -0.56，纵向世界范围变成 ±1.79（横屏是 ±1）
+         *
+         * 【为什么这会让音符「上方看不见」】
+         *   音符的可见上限是 `top = -1 / aspect_ratio`：
+         *     横屏 aspect=1.78 → top = -0.56
+         *     竖屏 aspect=0.56 → top = -1.79
+         *   竖屏的 top 更负，**世界可见范围其实更大**；但音符的**生成距离**
+         *   由 speed 决定（固定），落到 -0.56 以上就不画了 —— 于是竖屏
+         *   上方出现一段「有音符但看不见」的空白，等它落到横屏那个高度才出现。
+         *
+         * 【修法：竖屏也锁横屏比例，加黑边】
+         *   竖屏时把 aspect_ratio 钳到「谱面比例的倒数」不合适 —— 那会把
+         *   谱面压扁。正确做法是**保持谱面比例、按宽度铺满、上下留黑边**，
+         *   也就是走 force_aspect_ratio 那条分支。
+         *
+         *   判断依据：屏幕比谱面窄（screen_ar < aspect_ratio）就是「放不下」，
+         *   此时用 viewport() 居中裁剪 —— 它本来就会算 (rw, rh) 并居中。
+         *   ⚠ 不能用 min()：min 会让 self.aspect_ratio 跟着屏幕变，
+         *     而音符范围、UI 顶部坐标全都依赖它。 */
+        let effective = if screen_ar < aspect_ratio {
+            /* 屏幕比谱面窄（竖屏 / 窄屏）：锁谱面比例，上下或左右留黑边 */
+            aspect_ratio
         } else {
-            self.aspect_ratio = aspect_ratio.min(vp.2 as f32 / vp.3 as f32);
-            self.camera.zoom.y = -self.aspect_ratio;
-            self.camera.viewport = Some(viewport(self.aspect_ratio, vp));
+            /* 屏幕比谱面宽（超宽屏）：用屏幕比例，不裁 */
+            screen_ar
         };
+        self.aspect_ratio = effective;
+        self.camera.zoom.y = -effective;
+        self.camera.viewport = Some(viewport(effective, vp));
         true
     }
 
