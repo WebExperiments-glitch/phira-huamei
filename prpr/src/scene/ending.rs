@@ -200,19 +200,21 @@ impl Scene for EndingScene {
     fn touch(&mut self, tm: &mut TimeManager, touch: &Touch) -> Result<bool> {
         let t = tm.now() as f32;
         if self.btn_retry.touch(touch, t) {
-            /* 【2026-11-15 改】不再因为「还在上传」而拦着。
-               玩家打完就想走，不让走是把他当人质。
-               代价：场景销毁时 upload_task 被 drop，那次上传就取消了 ——
-               由客户端重传兜底（服务端已有幂等去重）。
-               排队与重试的细节见 lib/hm-queue.mjs。 */
-            self.tr_start = t;
-            self.next = 1;
+            if self.upload_task.is_some() {
+                show_message(tl!("still-uploading"));
+            } else {
+                self.tr_start = t;
+                self.next = 1;
+            }
             return Ok(true);
         }
         if self.btn_proceed.touch(touch, t) {
-            /* 同上：不拦退出。 */
-            self.tr_start = t;
-            self.next = 2;
+            if self.upload_task.is_some() {
+                show_message(tl!("still-uploading"));
+            } else {
+                self.tr_start = t;
+                self.next = 2;
+            }
             return Ok(true);
         }
         if self.btn_detail.touch(touch) {
