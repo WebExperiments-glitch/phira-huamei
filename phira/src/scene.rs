@@ -64,8 +64,12 @@ thread_local! {
 
 pub static ASSET_CHART_INFO: Lazy<Mutex<Option<ChartInfo>>> = Lazy::new(Mutex::default);
 /// External (in-browser) documents shown in the consent dialog.
-pub const TERMS_URL: &str = "https://phira.moe/terms-of-use";
-pub const PRIVACY_URL: &str = "https://phira.moe/privacy-policy";
+/* ⚠ 不要指回 phira.moe。上游那两个页面 2026-11 起已经打不开了
+   （官方把站点收了），用户点「用户协议 / 隐私政策」只会看到一片空白，
+   还以为是我们的 bug。改成指向 P.H.M. 自己的协议页。
+   sharecode 是部署平台的分享参数，跟路径无关，加 query 即可。 */
+pub const TERMS_URL: &str = "https://phm.app.workbuddy.host/terms?sharecode=NXNUI4YAVG";
+pub const PRIVACY_URL: &str = "https://phm.app.workbuddy.host/privacy?sharecode=NXNUI4YAVG";
 pub static TERMS: OnceCell<Option<String>> = OnceCell::new();
 type LoadTosTask = Task<Result<Option<String>>>;
 pub static LOAD_TOS_TASK: Lazy<Mutex<Option<LoadTosTask>>> = Lazy::new(Mutex::default);
