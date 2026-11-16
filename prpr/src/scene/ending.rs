@@ -78,6 +78,10 @@ pub struct EndingScene {
     next: u8, // 0 -> none, 1 -> pop, 2 -> exit
     update_state: Option<RecordUpdateState>,
     rated: bool,
+    /// 【话梅】用户主动关闭了上报（设置 → 账号 → 上报游玩数据）。
+    /// 和 `rated=false` 不是一回事：那个是「开了 mod/键盘导致不评级」，
+    /// 这个是「你选择不上传」。混在一起会显示成 UNRATED，误导用户以为成绩不算分。
+    telemetry_off: bool,
 
     upload_fn: Option<UploadFn>,
     upload_task: Option<(Task<Result<RecordUpdateState>>, MessageHandle)>,
@@ -155,6 +159,7 @@ impl EndingScene {
                 })
             },
             rated: upload_task.is_some(),
+            telemetry_off: !config.telemetry_enabled,
 
             info,
             result,
@@ -721,7 +726,16 @@ impl Scene for EndingScene {
             } else {
                 format!("{:.2}x", self.speed)
             };
-            let status_text = if !self.rated && !self.autoplay && !self.use_keyboard {
+            let status_text = if self.telemetry_off {
+                /* 用户自己关了上报 —— 必须和「UNRATED」区分开。
+                   UNRATED 的语义是「这局不参与评级」（mod/键盘），
+                   而这里是「成绩不会被上传」。两者混用会让用户以为成绩作废。 */
+                if spd.is_empty() {
+                    "NOT UPLOADED".to_string()
+                } else {
+                    format!("NOT UPLOADED {spd}")
+                }
+            } else if !self.rated && !self.autoplay && !self.use_keyboard {
                 if spd.is_empty() {
                     "UNRATED".to_string()
                 } else {
