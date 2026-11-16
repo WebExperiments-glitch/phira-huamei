@@ -413,6 +413,10 @@ pub struct Resource {
     pub chart_aspect: f32,
     pub dpi: u32,
     pub last_vp: (i32, i32, i32, i32),
+    /// 上一次的 (采样数, TAA 开, 需要离屏目标)。用于判断抗锯齿设置是否变了。
+    last_aa: (u32, bool, bool),
+    /// 上一次的渲染精度。变化时要重建离屏目标。
+    last_scale: f32,
     pub note_width: f32,
 
     pub time: f64,
@@ -445,6 +449,10 @@ pub struct Resource {
     pub extra_sfxs: SfxMap,
 
     pub chart_target: Option<MSRenderTarget>,
+    /// 【话梅】高质量空间上采样（bicubic）。懒初始化（建 shader 要 GL 上下文）。
+    /// 放在 Resource 里而不是 GameScene：blit 时要和 `chart_target` 同时可变借用，
+    /// 同结构体不同字段才合法。
+    pub upscaler: Option<crate::upscale::Upscaler>,
     pub no_effect: bool,
 
     pub note_buffer: RefCell<NoteBuffer>,
@@ -570,6 +578,8 @@ impl Resource {
             chart_aspect: aspect_ratio,
             dpi: DPI_VALUE.load(std::sync::atomic::Ordering::SeqCst),
             last_vp: (0, 0, 0, 0),
+            last_aa: (0, false, false),
+            last_scale: 1.,
             note_width,
 
             time: 0.,
@@ -601,6 +611,7 @@ impl Resource {
             extra_sfxs: SfxMap::new(),
 
             chart_target: None,
+            upscaler: None,
             no_effect,
 
             note_buffer: RefCell::new(NoteBuffer::default()),
@@ -626,12 +637,38 @@ impl Resource {
     }
 
     pub fn update_size(&mut self, vp: (i32, i32, i32, i32)) -> bool {
-        if self.last_vp == vp {
+        /* 【话梅 2026-11-16】抗锯齿切换必须**重建** chart_target。
+           `MSRenderTarget` 的采样数在创建时就固定了（glRenderbufferStorageMultisample），
+           运行期改 sample_count 不会改变它 —— 只改配置不重建，就会拿
+           「4x 的 FBO」按「1x 的假设」去 blit，或者反过来：
+           在 GL 上表现为 `glBlitFramebuffer` 尺寸/采样不匹配 → **画面卡死/黑屏**。
+           这正是一改抗锯齿就卡住的原因。
+
+           原来这里只在 `last_vp != vp` 时重建 —— 改设置不改窗口，条件永远不成立。
+           现在把 (采样数, TAA, 是否要离屏) 一起纳入「是否需要重建」的判断。 */
+        let want_target = !self.no_effect || self.config.sample_count != 1 || self.config.taa;
+        /* 渲染精度也算进「重建条件」—— 目标尺寸变了必须重建，否则贴图拉伸会糊/错位。 */
+        let scale = if self.config.render_scale.is_finite() { self.config.render_scale.clamp(0.6, 1.) } else { 1. };
+        let aa_now = (self.config.sample_count.max(1), self.config.taa, want_target);
+        let scale_changed = (self.last_scale - scale).abs() > 1e-4;
+        self.last_scale = scale;
+        let aa_changed = self.last_aa != aa_now;
+        if self.last_vp == vp && !aa_changed && !scale_changed {
             return false;
         }
         self.last_vp = vp;
-        if !self.no_effect || self.config.sample_count != 1 {
-            self.chart_target = Some(MSRenderTarget::new((vp.2 as u32, vp.3 as u32), self.config.sample_count));
+        self.last_aa = aa_now;
+        if want_target {
+            /* TAA 也要离屏目标 —— 它需要上一帧纹理做时间混合；
+               此时 sample_count 被 UI 强制为 1，所以不付 MSAA 的带宽。 */
+            /* 渲染精度：离屏目标按比例缩小，blit 时再放大铺满 —— 这就是分辨率缩放。
+               下限 1 像素，避免 scale 极端时建出 0 尺寸 FBO。 */
+            let tw = ((vp.2 as f32 * scale).round() as u32).max(1);
+            let th = ((vp.3 as f32 * scale).round() as u32).max(1);
+            self.chart_target = Some(MSRenderTarget::new((tw, th), aa_now.0));
+        } else {
+            /* 从「有离屏」切回「无离屏」时也要清掉，否则会继续用旧的 target 贴图。 */
+            self.chart_target = None;
         }
         fn viewport(aspect_ratio: f32, (x, y, w, h): (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
             let w = w as f32;

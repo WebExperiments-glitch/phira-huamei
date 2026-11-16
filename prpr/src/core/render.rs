@@ -34,12 +34,35 @@ impl MSRenderTarget {
         let mut rbo = 0;
         unsafe {
             use miniquad::gl::*;
+            /* 【话梅 2026-11-16】必须保存/恢复 GL 绑定。
+               这个构造函数现在会在**渲染过程中**被调用（改抗锯齿 / 渲染精度
+               都要重建 target）。原来只 glBindFramebuffer 不恢复 ——
+               后面紧接着的 set_camera / render_pass 就作用在错误的 FBO 上，
+               表现是「一改抗锯齿画面就黑掉」（进程还活着、FPS 还正常）。
+
+               顺带把 FBO 完整性查了：MSAA 4x 在部分驱动/软件渲染下不被支持，
+               建出来是**不完整**的 FBO，同样渲染全黑。不完整就自动降级到 1x。 */
+            let mut prev_fbo: i32 = 0;
+            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &mut prev_fbo);
+
             glGenRenderbuffers(1, &mut rbo as *mut _);
             glBindRenderbuffer(GL_RENDERBUFFER, rbo);
             glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples as _, GL_RGB8, dim.0 as _, dim.1 as _);
             glGenFramebuffers(1, &mut fbo as *mut _);
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rbo);
+
+            if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE && samples > 1 {
+                // 降级重来：同样的 FBO/RBO，改用单采样
+                glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+                glRenderbufferStorageMultisample(GL_RENDERBUFFER, 1, GL_RGB8, dim.0 as _, dim.1 as _);
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rbo);
+                tracing::warn!("MSAA {samples}x 不受支持，已降级为 1x");
+            }
+
+            // 恢复现场（renderbuffer 绑定不影响绘制，不用管）
+            glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo as _);
         }
         let gl = unsafe { get_internal_gl() };
         let texture = Texture::new_render_texture(
@@ -69,6 +92,11 @@ impl MSRenderTarget {
                 None,
             ],
         }
+    }
+
+    /// 离屏目标的实际像素尺寸（考虑渲染精度缩放后）。
+    pub fn dim(&self) -> (u32, u32) {
+        self.dim
     }
 
     pub fn blit(&self) {

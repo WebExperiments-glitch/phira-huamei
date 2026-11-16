@@ -126,6 +126,11 @@ pub struct GameScene {
     /// 上一帧是否处于暂停，用来数「暂停了几次」
     was_paused: bool,
 
+    /// 【话梅】实时判定条状态
+    timing_bar: crate::timing_bar::TimingBar,
+    /// 【话梅】TAA 状态（历史纹理 + 抖动计数）
+    taa: crate::taa::Taa,
+
     should_exit: bool,
     next_scene: Option<NextScene>,
 
@@ -173,6 +178,7 @@ macro_rules! reset {
     ($self:ident, $res:expr, $tm:ident) => {{
         $self.bad_notes.clear();
         $self.judge.reset();
+        $self.timing_bar.clear();
         $self.chart.reset();
         $res.judge_line_color = $res.res_pack.info.color_perfect();
         $self.music.pause()?;
@@ -352,6 +358,8 @@ impl GameScene {
             pause_count: 0,
             dt_outliers: 0,
             was_paused: false,
+            timing_bar: crate::timing_bar::TimingBar::default(),
+            taa: crate::taa::Taa::default(),
             last_update_time: 0.,
             pause_rewind: None,
             pause_first_time: f32::NEG_INFINITY,
@@ -1104,6 +1112,15 @@ impl Scene for GameScene {
             self.gl.quad_gl.viewport(self.res.camera.viewport);
             self.judge.update(&mut self.res, &mut self.chart, &mut self.bad_notes);
             self.gl.quad_gl.viewport(None);
+            /* 【话梅】把这一帧的判定喂给实时判定条。
+               事件队列和 judgements（上报链）完全独立，不影响成绩。 */
+            if self.res.config.show_timing_bar {
+                let real = tm.real_time();
+                for ev in self.judge.take_timing_events() {
+                    self.timing_bar.record(&ev, real, 3.0);
+                }
+                self.timing_bar.animate(real, 3.0);
+            }
         }
         if let Some(update) = &mut self.update_fn {
             update(self.res.time, &mut self.res, &mut self.judge);
@@ -1233,13 +1250,39 @@ impl Scene for GameScene {
             self.fps_last_frame_time = current_time;
         }
 
+        /* 【话梅 TAA】抖动必须在借用 self.res 之前算 —— 之后 self 被长期借用。 */
+        let taa_on = self.res.config.taa && self.res.config.sample_count <= 1;
+        if taa_on {
+            /* 历史纹理尺寸必须和**离屏目标**一致（不是 ui.viewport）：
+               渲染精度 < 100% 时离屏目标被缩小，两者不一致会让历史帧被拉伸，
+               在画面上表现为一块块错位的重影。 */
+            let dim = self
+                .res
+                .chart_target
+                .as_ref()
+                .map(|it| it.dim())
+                .unwrap_or((ui.viewport.2 as u32, ui.viewport.3 as u32));
+            self.taa.ensure_history(dim);
+        }
+        let taa_jitter = if taa_on {
+            self.taa.jitter((ui.viewport.2 as u32, ui.viewport.3 as u32))
+        } else {
+            Vec2::ZERO
+        };
+        let taa_weight = self.taa.history_weight(self.res.config.speed * 2.);
+        let taa_history = self.taa.history();
+
         let res = &mut self.res;
         let asp = ui.viewport.2 as f32 / ui.viewport.3 as f32;
+        /* blit 段要用它，但那时不能再碰 res（否则借用一直拖到 self.ui()，冲突）。
+           提前取出来。 */
+        let render_scale_cfg = res.config.render_scale;
         if res.update_size(crate::huamei::safe_viewport(ui.viewport)) || self.mode == GameMode::View {
             set_camera(&res.camera);
         }
 
         let msaa = res.config.sample_count > 1;
+        let taa = taa_on; // TAA 与 MSAA 互斥（见上）
 
         let chart_onto = res
             .chart_target
@@ -1247,8 +1290,12 @@ impl Scene for GameScene {
             .map(|it| if msaa { it.input() } else { it.output() })
             .or(res.camera.render_target);
         push_camera_state();
+        /* ① 【话梅 TAA】亚像素抖动：偏移谱面相机（不含 HUD）。
+           没有这一步，下面的混合只会得到运动模糊，不是抗锯齿。 */
+        let jitter = taa_jitter;
         set_camera(&Camera2D {
             zoom: vec2(1., -asp),
+            target: jitter,
             viewport: if res.chart_target.is_some() { None } else { Some(ui.viewport) },
             render_target: chart_onto,
             ..Default::default()
@@ -1262,7 +1309,15 @@ impl Scene for GameScene {
 
         let chart_target_vp = if res.chart_target.is_some() {
             let vp = res.camera.viewport.unwrap();
-            Some((vp.0 - ui.viewport.0, vp.1 - ui.viewport.1, vp.2, vp.3))
+            /* 【话梅】渲染精度：离屏目标被缩小了，viewport 必须同步缩小，
+               否则只会画到左上角一块（剩下的黑边）。 */
+            let sc = if res.config.render_scale.is_finite() { res.config.render_scale.clamp(0.6, 1.) } else { 1. };
+            Some((
+                ((vp.0 - ui.viewport.0) as f32 * sc).round() as i32,
+                ((vp.1 - ui.viewport.1) as f32 * sc).round() as i32,
+                ((vp.2 as f32 * sc).round() as i32).max(1),
+                ((vp.3 as f32 * sc).round() as i32).max(1),
+            ))
         } else {
             res.camera.viewport
         };
@@ -1304,6 +1359,16 @@ impl Scene for GameScene {
         }
         self.ui(ui, tm)?;
         self.overlay_ui(ui, tm)?;
+        /* 【话梅】实时判定条：切到屏幕坐标系画，避开判定线的谱面相机。 */
+        if self.res.config.show_timing_bar && !tm.paused() {
+            push_camera_state();
+            set_camera(&ui.camera());
+            let (early, late) = self.judge.early_late_counts();
+            ui.abs_scope(|ui| {
+                crate::timing_bar::render(ui, &self.timing_bar, 1.0, early, late);
+            });
+            pop_camera_state();
+        }
 
         if self.mode == GameMode::TweakOffset {
             push_camera_state();
@@ -1328,9 +1393,9 @@ impl Scene for GameScene {
             }
             pop_camera_state();
         }
-        if msaa || !self.res.no_effect {
+        if msaa || taa || !self.res.no_effect {
             // render the texture onto screen
-            if let Some(target) = &self.res.chart_target {
+            if let Some(target) = &mut self.res.chart_target {
                 self.gl.flush();
                 push_camera_state();
                 self.gl.quad_gl.viewport(None);
@@ -1340,17 +1405,86 @@ impl Scene for GameScene {
                     viewport: Some(ui.viewport),
                     ..Default::default()
                 });
-                draw_texture_ex(
-                    target.output().texture,
-                    -1.,
-                    -ui.top,
-                    WHITE,
-                    DrawTextureParams {
-                        dest_size: Some(vec2(2., ui.top * 2.)),
-                        ..Default::default()
-                    },
-                );
+                /* 【话梅】放大这一遍：渲染精度 < 100% 时用 bicubic 上采样，
+                   而不是默认的双线性。双线性在放大后边缘发软、判定线会糊；
+                   bicubic 能明显找回锐度 —— 这是 MetalFX Spatial 在
+                   GLES 管线里的等效做法（详见 upscale.rs 顶部说明）。 */
+                let scale = if render_scale_cfg.is_finite() { render_scale_cfg.clamp(0.6, 1.) } else { 1. };
+                let use_up = scale < 0.999;
+                if use_up {
+                    let (iw, ih) = target.dim();
+                    if self.res.upscaler.is_none() {
+                        self.res.upscaler = crate::upscale::Upscaler::new((iw as f32, ih as f32)).ok();
+                    }
+                    if let Some(up) = &mut self.res.upscaler {
+                        up.set_input_size((iw as f32, ih as f32));
+                        up.draw(target.output().texture, ui.top);
+                    }
+                } else {
+                    draw_texture_ex(
+                        target.output().texture,
+                        -1.,
+                        -ui.top,
+                        WHITE,
+                        DrawTextureParams {
+                            dest_size: Some(vec2(2., ui.top * 2.)),
+                            ..Default::default()
+                        },
+                    );
+                }
+                /* ④ 【话梅 TAA】时间累积混合。
+                   先画历史（权重 1-α），再把当前帧以 α 叠上去。
+                   顺序很重要：反过来的话历史会盖住当前帧的细节。
+                   α 由滚动速度决定（③ 的近似），静止时更依赖历史。 */
+                if taa {
+                    let w = taa_weight;
+                    if let Some(hist) = taa_history {
+                        draw_texture_ex(
+                            hist,
+                            -1.,
+                            -ui.top,
+                            Color { a: 1. - w, ..WHITE },
+                            DrawTextureParams {
+                                dest_size: Some(vec2(2., ui.top * 2.)),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
                 pop_camera_state();
+
+                /* 收尾：把当前帧写进历史纹理。少了这一步，历史永远是空的，
+                   下一帧的混合就什么都没叠上去（看起来像没生效）。 */
+                if taa {
+                    let hist = self.taa.history_target();
+                    let cur = target.output().texture;
+                    if let Some(hist) = hist {
+                        push_camera_state();
+                        /* ⚠ zoom.y 必须是**正数**。
+                           踩过：写成 vec2(1., -1.) 会把历史帧上下翻转一次，
+                           读到屏幕上就是「整个画面镜像 + 重影」（音符和数字都倒着）。
+                           这里要和下面「贴到屏幕」用同一套朝向，
+                           否则 TAA 混合出来的就是一张倒过来的旧画面。 */
+                        set_camera(&Camera2D {
+                            zoom: vec2(1., 1.),
+                            render_target: Some(hist),
+                            ..Default::default()
+                        });
+                        clear_background(BLACK);
+                        draw_texture_ex(
+                            cur,
+                            -1.,
+                            -1.,
+                            WHITE,
+                            DrawTextureParams {
+                                dest_size: Some(vec2(2., 2.)),
+                                ..Default::default()
+                            },
+                        );
+                        pop_camera_state();
+                    }
+                }
+                self.taa.advance();
             }
         }
         Ok(())

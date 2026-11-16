@@ -5,6 +5,12 @@ use bitflags::bitflags;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
+/// serde 默认 true —— `#[serde(default)]` 对 bool 是 false，
+/// 那会让**所有旧存档**在升级后自动变成「关闭上报」，不是我们想要的默认。
+fn default_true() -> bool {
+    true
+}
+
 pub static TIPS: Lazy<Vec<String>> = Lazy::new(|| include_str!("tips.txt").split('\n').map(str::to_owned).collect());
 
 bitflags! {
@@ -85,7 +91,32 @@ pub struct Config {
     pub preferred_sample_rate: Option<u32>,
     pub res_pack_path: Option<String>,
     pub sample_count: u32,
+    /// 【话梅】成绩上报（遥测）总开关。
+    ///
+    /// 合规要求（《个人信息保护法》第 15/16 条）：处理个人信息应取得同意，
+    /// 并提供**便捷的拒绝方式**。采集内容含位置（敏感个人信息）与陀螺仪，
+    /// 因此必须可关。
+    ///
+    /// 关闭后：**不再上报任何游玩数据**（成绩、判定、触摸热区、设备、位置、陀螺仪）。
+    /// 已有的服务端记录不受影响，用户可另行申请删除。
+    #[serde(default = "default_true")]
+    pub telemetry_enabled: bool,
+    /// 【话梅】渲染精度（0.6~1.0）。离屏目标按此比例缩放，最后放大铺满屏幕。
+    /// 1.0 = 原生分辨率；越低越省填充率，画面越软。0 视为 1.0（旧存档兼容）。
+    #[serde(default)]
+    pub render_scale: f32,
+    /// 【话梅】帧率上限。0 = 不限制；60 / 90 / 120 为显式上限。
+    /// iOS 上走 `set_preferred_fps`，由系统按 CADisplayLink 节流。
+    #[serde(default)]
+    pub fps_limit: u32,
+    /// 【话梅】TAA（时间抗锯齿）。与 MSAA 互斥：开 TAA 时 sample_count 强制为 1。
+    /// 通过相邻帧混合消除边缘闪烁；音符高速移动时可能有轻微拖影。
+    #[serde(default)]
+    pub taa: bool,
     pub show_acc: bool,
+    /// 【话梅】对局中显示实时判定条（默认关，设置→调试里开）。
+    #[serde(default)]
+    pub show_timing_bar: bool,
     pub show_avg_fps: bool,
     pub speed: f32,
     pub touch_debug: bool,
@@ -126,7 +157,12 @@ impl Default for Config {
             preferred_sample_rate: None,
             res_pack_path: None,
             sample_count: 1,
+            taa: false,
+            telemetry_enabled: true,
+            render_scale: 1.,
+            fps_limit: 0,
             show_acc: false,
+            show_timing_bar: true,
             show_avg_fps: false,
             speed: 1.,
             touch_debug: false,
@@ -142,6 +178,15 @@ impl Default for Config {
 
 impl Config {
     pub fn init(&mut self) {
+        /* 渲染精度：0 / 非有限 = 旧存档没这个字段，按原生处理 */
+        if !self.render_scale.is_finite() || self.render_scale <= 0. {
+            self.render_scale = 1.;
+        }
+        self.render_scale = self.render_scale.clamp(0.6, 1.);
+        /* 帧率上限只接受白名单值，脏数据按「不限制」处理 */
+        if !matches!(self.fps_limit, 0 | 60 | 90 | 120) {
+            self.fps_limit = 0;
+        }
         if let Some(flag) = self.autoplay {
             self.mods.set(Mods::AUTOPLAY, flag);
         }

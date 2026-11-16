@@ -11,8 +11,19 @@ pub mod info;
 pub mod judge;
 pub mod parse;
 pub mod particle;
+/* 【话梅 ← PhiraiAd】练习辅助：流速曲线 + 视野控制。
+   两个模块都是零 crate 内依赖的纯函数，先独立引入，
+   后续再逐步接进 config / game UI。 */
+pub mod practice_speed;
+pub mod practice_view;
 pub mod scene;
 pub mod task;
+/// 【话梅】时间抗锯齿（TAA）
+pub mod taa;
+/// 【话梅】高质量空间上采样（MetalFX Spatial 的 GLES 等效实现）
+pub mod upscale;
+/// 【话梅】实时判定条（参考 PhiraiAd，自包含重写）
+pub mod timing_bar;
 pub mod time;
 pub mod ui;
 
