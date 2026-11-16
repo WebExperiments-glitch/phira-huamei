@@ -365,7 +365,19 @@ impl IntClampedTween {
 pub struct ClampedTween(pub TweenId, pub Range<f32>, pub Range<f32>);
 impl TweenFunction for ClampedTween {
     fn y(&self, x: f32) -> f32 {
-        (TWEEN_FUNCTIONS[self.0 as usize](f32::tween(&self.1.start, &self.1.end, x)) - self.2.start) / (self.2.end - self.2.start)
+        /* 【上游 issue #891】防除零。
+           当构造时的 range 是 -1..1，而 tween 是 quad（二次函数）时，
+           f(-1) 和 f(1) 都等于 1 → y_range 退化成 1..1，分母为 0。
+           常见触发：极短的速度事件（实际时长 < 0.0001s）让 end_speed 取错，
+           speed/end_speed 算出 -1，传进 ClampedTween::new(quad, -1..1) →
+           height.now() 拿到 NaN → 整局崩溃。
+           ⚠ 退化时返回线性插值 x，和 IntClampedTween 的兜底保持一致 ——
+             总比 NaN 传遍全谱好。 */
+        let denom = self.2.end - self.2.start;
+        if !denom.is_finite() || denom.abs() < 1e-8 {
+            return x;
+        }
+        (TWEEN_FUNCTIONS[self.0 as usize](f32::tween(&self.1.start, &self.1.end, x)) - self.2.start) / denom
     }
 
     fn as_any(&self) -> &dyn Any {

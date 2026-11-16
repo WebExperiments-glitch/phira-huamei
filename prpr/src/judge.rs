@@ -712,7 +712,13 @@ impl Judge {
                         if matches!(note.judge, JudgeStatus::NotJudged) {
                             // keep the note after bad judgement
                             line.notes[id as usize].judge = JudgeStatus::PreJudge;
-                            judgements.push((Judgement::Bad, line_id, id, None));
+                            /* 【上游 issue #929】Bad 必须记下触点时间。
+                               Good 传的是 Some(t)（t = time_of(touch)，即触点真实时间），
+                               Bad 原来传 None → 结算时退化成 `diff.unwrap_or(t)`，
+                               用的是**处理这一帧**的时间。卡顿时一帧晚到，
+                               本来 Early 的 Bad 会被算成 Late ——
+                               直接污染我们的早晚偏差条和 anti-cheat 的 diff 数据。 */
+                            judgements.push((Judgement::Bad, line_id, id, Some(t)));
                         }
                     }
                 } else {
@@ -997,10 +1003,14 @@ impl Judge {
                 (note.object.now(res), note.hitsound.clone())
             };
             let line = &chart.lines[line_id];
+            /* 【上游 PR #898】autoplay 也要尊重音符自己的 fx_color。
+               原实现硬编码 fx_perfect()，自定义击中特效色的谱在 autoplay 下
+               和普通游玩看到的颜色不一致 —— 谱师调的配色等于白调。 */
+            let note = &line.notes[id as usize];
             res.with_model(line.now_transform(res, &chart.lines) * note_transform, |res| {
-                res.emit_at_origin(line.notes[id as usize].rotation(line), res.res_pack.info.fx_perfect())
+                res.emit_at_origin(note.rotation(line), note.fx_color.unwrap_or_else(|| res.res_pack.info.fx_perfect()))
             });
-            if !matches!(chart.lines[line_id].notes[id as usize].kind, NoteKind::Hold { .. }) {
+            if !matches!(note.kind, NoteKind::Hold { .. }) {
                 note_hitsound.play(res);
             }
         }
