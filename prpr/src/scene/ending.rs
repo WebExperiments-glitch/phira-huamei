@@ -24,6 +24,15 @@ pub struct RecordUpdateState {
     pub improvement: u32,
     pub gain_exp: f32,
     pub new_rks: Option<f32>,
+    /// 【话梅】这张谱**累计**第几局（服务端返回）。
+    ///
+    /// 为什么要显示它：同谱多局的成绩均值是当前**唯一不靠模型**就能提信号的手段
+    /// （单局信噪比只有 1.85）。让玩家看见「第 3 局了，再打 2 局就够」，
+    /// 比任何提示文案都直接。
+    ///
+    /// 服务端还没返回这个字段时是 None —— 界面不显示，不会出错。
+    #[serde(default)]
+    pub chart_plays: Option<u32>,
 }
 
 /// 千分位分组，给「失分 352,138」这类数字用。
@@ -142,6 +151,7 @@ impl EndingScene {
                     improvement,
                     gain_exp: 0.,
                     new_rks: None,
+                    chart_plays: None,
                 })
             },
             rated: upload_task.is_some(),
@@ -395,6 +405,17 @@ impl Scene for EndingScene {
             });
 
             if let Some(s) = &self.update_state {
+                /* 【话梅】本谱累计第几局 —— 放在分数上方一行。
+                   同谱多局的成绩均值是目前唯一不靠模型就能提信号的手段
+                   （单局信噪比只有 1.85），直接让玩家看见进度。 */
+                if let Some(n) = s.chart_plays {
+                    ui.text(format!("本谱累计第 {n} 局"))
+                        .pos(x - 0.01, y - 0.05)
+                        .anchor(1., 1.)
+                        .color(semi_white(pf))
+                        .size(0.42)
+                        .draw_using(&BOLD_FONT);
+                }
                 if s.best {
                     ui.text(format!("{}  {:+07}", tl!("new-best"), s.improvement))
                         .pos(x - 0.01, y - 0.016)

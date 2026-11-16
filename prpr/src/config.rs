@@ -67,6 +67,14 @@ pub struct Config {
     pub interactive: bool,
     pub mods: Mods,
     pub mp_address: String,
+    /// 【huamei】低画质模式。
+    ///
+    /// ⚠ 和 `Mods::NO_SHADER` **不是一回事**：那是「mod」，被算进 UNRATED，
+    ///   会让这一局不计成绩、不上传（game.rs 的上报守卫会拦）。
+    ///   这里是纯画质设置 —— 关特效 / 关粒子 / 60fps，**不影响成绩有效性**。
+    ///   想省电又想要成绩的人就该用这个。
+    #[serde(default)]
+    pub low_quality: bool,
     pub mp_enabled: bool,
     pub note_scale: f32,
     pub offline_mode: bool,
@@ -106,6 +114,7 @@ impl Default for Config {
             interactive: true,
             mods: Mods::default(),
             mp_address: "mp2.phira.cn:12345".to_owned(),
+            low_quality: false,
             mp_enabled: false,
             note_scale: 1.0,
             offline_mode: false,

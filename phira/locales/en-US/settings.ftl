@@ -69,7 +69,11 @@ item-touch-debug-sub = Display user touch points.
 load-cali-failed = Failed to load calibration audio.
 
 about-content =
-  Phira v{ $version }
+  Phira v{ $version } · huamei (话梅) edition
+
+  A community fork of Phira. Fork by WebExperiments-glitch (话梅 / huamei), upstream TeamFlos/Phira.
+  Focus: iOS adaptation (portrait, safe area, dual-screen), richer results data, per-note judgement upload.
+  Source & changelog: github.com/WebExperiments-glitch/phira-huamei
 
   Phira is a non-commercial community-driven rhythm game inspired by Phigros.
 

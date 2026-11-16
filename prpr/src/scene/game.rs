@@ -114,6 +114,18 @@ enum State {
 }
 
 pub struct GameScene {
+    /* ── 计时完整性（反作弊 + 数据质量）──
+       音游最常见的作弊是改时间：把歌快进跑完。它会让「游玩中的真实耗时」
+       和「谱面时长」对不上 —— 这是唯一一个**不依赖客户端自报秒数**的指标。 */
+    /// 游玩中且未暂停的累计真实耗时（秒）
+    play_wall: f64,
+    /// 暂停次数
+    pause_count: u16,
+    /// 帧间隔 > 100ms 的次数（卡顿帧，AI 训练要降权）
+    dt_outliers: u16,
+    /// 上一帧是否处于暂停，用来数「暂停了几次」
+    was_paused: bool,
+
     should_exit: bool,
     next_scene: Option<NextScene>,
 
@@ -336,6 +348,10 @@ impl GameScene {
             music,
 
             state: State::Starting,
+            play_wall: 0.,
+            pause_count: 0,
+            dt_outliers: 0,
+            was_paused: false,
             last_update_time: 0.,
             pause_rewind: None,
             pause_first_time: f32::NEG_INFINITY,
@@ -1002,6 +1018,22 @@ impl Scene for GameScene {
                                 self.res.config.use_keyboard,
                                 crate::huamei::encode_judgements(&self.judge),
                                 crate::huamei::device_info(),
+                                {
+                                    let chart_ms = (self.res.track_length * 1000.).max(0.) as u32;
+                                    let wall_ms = (self.play_wall * 1000.).max(0.) as u32;
+                                    let ratio_x100 = if wall_ms > 0 {
+                                        ((chart_ms as f64 / wall_ms as f64) * 100.).clamp(0., 65535.) as u16
+                                    } else {
+                                        0
+                                    };
+                                    crate::huamei::TimingInfo {
+                                        wall_ms,
+                                        chart_ms,
+                                        ratio_x100,
+                                        pause_count: self.pause_count,
+                                        dt_outliers: self.dt_outliers,
+                                    }
+                                },
                             );
                             match payload.to_json_bytes() {
                                 Ok(bytes) => record_data = Some(bytes),
@@ -1221,7 +1253,10 @@ impl Scene for GameScene {
             render_target: chart_onto,
             ..Default::default()
         });
-        clear_background(BLACK);
+        /* 不清屏 —— 紧接着的 draw_background 是一张 CropCenter 铺满全屏的图，
+           会 100% 覆盖上一帧。原来这里每帧多一次全屏写入（3x 屏 ≈ 560 万像素），
+           在 iPad 上是纯浪费：填充率正是那里最紧的资源。
+           ⚠ 只有当背景确实铺满时才成立；BLACK_TEXTURE 兜底也是铺满的。 */
         draw_background(*res.background);
         pop_camera_state();
 
@@ -1249,7 +1284,22 @@ impl Scene for GameScene {
         self.bad_notes.retain(|dummy| dummy.render(res));
         let t = tm.real_time();
         let dt = (t - std::mem::replace(&mut self.last_update_time, t)) as f32;
-        if res.config.particle {
+        /* 计时采样：只统计「游玩中且未暂停」的真实时间。
+           暂停不算 —— 否则挂机十分钟会被误判成「拖慢」。 */
+        {
+            let paused = tm.paused();
+            if paused && !self.was_paused {
+                self.pause_count = self.pause_count.saturating_add(1);
+            }
+            self.was_paused = paused;
+            if matches!(self.state, State::Playing) && !paused {
+                self.play_wall += dt as f64;
+                if dt > 0.1 {
+                    self.dt_outliers = self.dt_outliers.saturating_add(1);
+                }
+            }
+        }
+        if res.config.particle && !res.config.low_quality {
             res.emitter.draw(dt);
         }
         self.ui(ui, tm)?;

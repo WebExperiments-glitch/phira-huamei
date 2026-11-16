@@ -50,6 +50,12 @@ pub struct UploadResp {
     pub error: Option<String>,
     #[serde(default)]
     pub play_id: Option<i64>,
+    /// 【话梅】这张谱**累计**被打了多少局（含本局）。
+    /// 结算页用它显示「本谱累计第 N 局」，引导玩家多打几局 ——
+    /// 同谱多局取均值是唯一不靠模型就能提信号的手段。
+    /// 服务端没实现时缺席，界面自动不显示。
+    #[serde(default)]
+    pub chart_plays: Option<u32>,
     /// 服务端重算 score/accuracy 后的**一致性告警**（非空表示有差异）。
     ///
     /// ⚠ 这不是错误 —— 成绩**已经落库**了。服务端刻意不为它拒收，
@@ -127,6 +133,22 @@ async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
     body: &T,
     token: Option<&str>,
 ) -> Result<R> {
+    post_json_extra(step, url, body, token, &[]).await
+}
+
+/// 同上，但可以再挂任意请求头。
+///
+/// 【为什么需要】为未来的多人采样区分玩家，上报要同时带 **Phira 会话 token**
+/// （`x-phira-token`）。它和 `x-hm-token`（话梅自建账号）不是一回事：
+/// 前者证明「这是哪个 Phira 玩家」，后者证明「这是哪个话梅账号」。
+/// 现在人只有一个，但链路先留好 —— 以后加第二个玩家不用再改一遍。
+async fn post_json_extra<T: Serialize, R: for<'de> Deserialize<'de>>(
+    step: &str,
+    url: &str,
+    body: &T,
+    token: Option<&str>,
+    extra_headers: &[(&str, String)],
+) -> Result<R> {
     /* ⚠ 必须带 sharecode：平台把站点设成「需要分享码」后，所有请求（含 API）
        裸访问都 403。见 client.rs 的 HUAMEI_SHARECODE 注释。 */
     let mut req = bare_client().post(with_sharecode(url)).json(body);
@@ -136,6 +158,9 @@ async fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
         //   JWT），所以两个都发，服务端优先读自定义头。见 server.mjs 的注释。
         req = req.header("x-hm-token", t.to_owned());
         req = req.header(AUTHORIZATION, format!("Bearer {t}"));
+    }
+    for (k, v) in extra_headers {
+        req = req.header(*k, v.clone());
     }
     let resp = req.send().await.with_context(|| "网络请求失败（检查网络/代理）".to_string())?;
     let status = resp.status();
@@ -667,7 +692,15 @@ pub async fn upload_play(payload_json: &[u8], chart_digest: Option<String>) -> R
             macroquad::window::screen_height()
         ));
     }
-    post_json::<_, UploadResp>("上报成绩", &format!("{}/play", hm_base()), &p, token.as_deref())
+    /* 话梅 token 走 `x-hm-token`；Phira 会话单独走 `x-phira-token` ——
+       服务端拿它调 /me 就能知道「这局是哪个 Phira 玩家打的」。
+       没有就是匿名上报（owner_id = null），不影响落库。 */
+    let phira_token: Option<String> = get_data().tokens.as_ref().map(|it| it.0.clone()).filter(|it| !it.is_empty());
+    let mut extra: Vec<(&str, String)> = Vec::new();
+    if let Some(t) = &phira_token {
+        extra.push(("x-phira-token", t.clone()));
+    }
+    post_json_extra::<_, UploadResp>("上报成绩", &format!("{}/play", hm_base()), &p, token.as_deref(), &extra)
         .await
         .map(|r| {
             /* 有差异就落盘 —— 这是**唯一**能看到服务端复算结果的窗口。

@@ -271,6 +271,9 @@ async fn the_main() -> Result<()> {
         .unwrap_or_default();
     data.init().await?;
     set_data(data);
+    /* 窗口已经建好（GLKViewController 就在里面），config 也读出来了 ——
+       这时才能改渲染帧率。低画质 = 60fps，否则屏幕满帧。 */
+    apply_frame_rate(get_data().config.low_quality);
     sync_data();
     save_data()?;
 
@@ -653,6 +656,20 @@ pub fn set_input_text(text: String) {
 pub fn set_chosen_file(file: String) {
     use prpr::scene::CHOSEN_FILE;
     CHOSEN_FILE.lock().unwrap().1 = Some(file);
+}
+
+/// 按「低画质模式」设置渲染帧率。
+///
+/// 120 = 屏幕满帧（ProMotion），60 = 省电档。只改 CADisplayLink 的节奏，
+/// 逻辑与判定仍按真实时间推进，不影响手感以外的任何东西。
+///
+/// 非 iOS 平台是空操作 —— 桌面的帧率由 config.fps_capped 那套老逻辑管。
+pub fn apply_frame_rate(low_quality: bool) {
+    #[cfg(target_os = "ios")]
+    {
+        miniquad::native::ios::set_preferred_fps(if low_quality { 60 } else { 120 });
+    }
+    let _ = low_quality;
 }
 
 #[cfg(target_env = "ohos")]

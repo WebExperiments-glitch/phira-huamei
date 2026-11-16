@@ -261,6 +261,22 @@ pub fn touch_heatmap() -> Option<[u8; HEAT_N * HEAT_N]> {
     Some(out)
 }
 
+/// 一局的时间完整性指标。全部是**整数**，服务端白名单好写、也不用担心浮点抖动。
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct TimingInfo {
+    /// 处于「游玩中且未暂停」的真实耗时（毫秒）。不含暂停、不含结算动画。
+    pub wall_ms: u32,
+    /// 谱面时长（毫秒），来自音频/谱面，客户端无法伪造成任意值。
+    pub chart_ms: u32,
+    /// `chart_ms / wall_ms * 100`。100 = 严丝合缝；<90 高度可疑（快进）；
+    /// >110 说明有卡顿或中途暂停没被计入。
+    pub ratio_x100: u16,
+    /// 暂停次数。正常玩家个位数；异常多说明在刷「分帧重开」。
+    pub pause_count: u16,
+    /// 帧间隔 > 100ms 的次数。给 AI 用：卡顿帧的判定不可信，训练时要降权。
+    pub dt_outliers: u16,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HuameiPayload {
     pub client_ver: String,
@@ -290,6 +306,14 @@ pub struct HuameiPayload {
     /// serde(default) 让 judge_ver=1 的历史数据仍能反序列化。
     #[serde(default)]
     pub max_touch_points: u8,
+
+    /// 计时完整性 —— 反作弊的第一道筛子，也是 AI 数据质量的标记。
+    ///
+    /// 音游里最常见的作弊是**改时间**：把歌曲加速跑完、或让判定窗口按真实时间
+    /// 而非谱面时间推进。两者都会让「游玩中的真实耗时」和「谱面时长」对不上。
+    /// 正常一局 ratio ≈ 1.00；明显小于 1 就是在快进。
+    #[serde(default)]
+    pub timing: TimingInfo,
 
     /// 结算时刻，Unix 毫秒
     pub played_at: i64,
@@ -380,6 +404,7 @@ pub fn build_payload(
     keyboard: bool,
     judge_bytes: Vec<u8>,
     device: DeviceInfo,
+    timing: TimingInfo,
 ) -> HuameiPayload {
     HuameiPayload {
         client_ver: String::new(),
@@ -396,6 +421,7 @@ pub fn build_payload(
         mods,
         keyboard,
         max_touch_points: if keyboard { 0 } else { result.max_touch.min(255) as u8 },
+        timing,
         played_at: chrono::Utc::now().timestamp_millis(),
         judge: STANDARD.encode(&judge_bytes),
         /* 陀螺仪摘要填进 device.gyro —— 它是「这一局的身体状态」，

@@ -51,6 +51,24 @@ fn store_safe_area(top: f32, left: f32, bottom: f32, right: f32) {
 ///
 ///   这个指针就是 `did_finish_launching_with_options` 里 setRootViewController
 ///   的那个 GLKViewController，用它呈现不会错。
+/// 运行期改渲染帧率（低画质模式用）。
+///
+/// `CADisplayLink` 的节奏由 GLKViewController 的 preferredFramesPerSecond 决定：
+/// 120 是 ProMotion 满帧，60 是省电档。只影响**渲染**节奏，逻辑仍按真实时间推进。
+pub fn set_preferred_fps(fps: i32) {
+    let p = match VIEW_CTRL_OBJ.lock().ok() {
+        Some(p) => *p,
+        None => return,
+    };
+    if p == 0 {
+        return;
+    }
+    unsafe {
+        let vc = p as ObjcId;
+        let _: () = msg_send![vc, setPreferredFramesPerSecond: fps];
+    }
+}
+
 pub fn root_view_controller_raw() -> Option<usize> {
     let p = *VIEW_CTRL_OBJ.lock().ok()?;
     if p == 0 {
@@ -452,17 +470,9 @@ pub fn define_app_delegate() -> *const Class {
                 screen_scale *= 2.;
             }
 
-            /* ── 渲染分辨率上限：3x 设备按 2x 渲染（2026-11-16 省电）──
-             *
-             * iPad Pro 是 3x（2048×2732 ≈ 560 万像素），每帧都要全屏着色。
-             * 音游的画面全是粒子/特效/大纹理，像素数和耗电基本线性。
-             * 降到 2x 少画 56% 像素，肉眼几乎无差（文字略软）。
-             *
-             * ⚠ 必须同时改到三处才自洽：framebuffer 尺寸、display.scale
-             *   （触摸换算 / 安全区都乘它）、contentScaleFactor。
-             *   只改 contentScaleFactor 会让触摸坐标和画面错位。 */
-            const MAX_RENDER_SCALE: f64 = 2.0;
-            let render_scale = screen_scale.min(MAX_RENDER_SCALE);
+            /* 渲染分辨率 = 屏幕原生（3x 就是 3x）。省电交给「低画质模式」，
+               手段是降帧率（60fps），不是降分辨率 —— 降分辨率会让文字发虚。 */
+            let render_scale = screen_scale;
 
             let (screen_width, screen_height) = (
                 (screen_rect.size.width * render_scale) as i32,
@@ -533,14 +543,9 @@ pub fn define_app_delegate() -> *const Class {
             let view_ctrl_obj: ObjcId = msg_send![view_ctrl_obj, init];
 
             let _: () = msg_send![view_ctrl_obj, setView: glk_view_obj];
-            /* ── 渲染帧率 120 → 60（2026-11-16 省电）──
-             *
-             * 这里原来写死 120：ProMotion 屏上 CADisplayLink 每 8.3ms 触发一次，
-             * 而游戏逻辑是 60Hz（桌面端日志 "FPS 421 (capped at 60)" 就是证据），
-             * 等于**白烧一倍 GPU**，对续航是最大的单项开销。
-             *
-             * 60 与逻辑帧率对齐，画面不再有「渲染了但状态没变」的重复帧。 */
-            let _: () = msg_send![view_ctrl_obj, setPreferredFramesPerSecond: 60];
+            /* 默认 120Hz（ProMotion 全开）。省电走「低画质模式」：
+               那里调 set_preferred_fps(60) 动态降下来，关掉再调回 120。 */
+            let _: () = msg_send![view_ctrl_obj, setPreferredFramesPerSecond: 120];
             let _: () = msg_send![window_obj, setRootViewController: view_ctrl_obj];
             let _: () = msg_send![
                 view_ctrl_obj,

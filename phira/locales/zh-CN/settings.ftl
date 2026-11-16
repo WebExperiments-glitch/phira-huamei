@@ -69,7 +69,13 @@ item-touch-debug-sub = 游玩过程中显示触摸点
 load-cali-failed = 加载音频失败
 
 about-content =
-  Phira v{ $version }
+  Phira v{ $version } · 话梅版（huamei）
+
+  本版本基于 Phira 官方社区的魔改版（fork）。
+  魔改：WebExperiments-glitch（话梅）
+  上游：TeamFlos/Phira 及其社区贡献者
+  改动方向：iOS 适配（竖屏 / 安全区 / 双屏）、结算页数据（早晚偏差、失分构成）、逐音符判定上报
+  源码与改动记录：github.com/WebExperiments-glitch/phira-huamei
 
   Phira 是一款玩法基于 Phigros 的非商业社区音乐游戏，使用 Rust 开发。
 

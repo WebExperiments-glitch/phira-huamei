@@ -1027,6 +1027,8 @@ struct ChartList {
     dc_pause_btn: DRectButton,
     dhint_btn: DRectButton,
     opt_btn: DRectButton,
+    low_quality_btn: DRectButton,
+    aa_btn: DRectButton,
     use_keyboard_btn: DRectButton,
     speed_slider: Slider,
     size_slider: Slider,
@@ -1041,6 +1043,8 @@ impl ChartList {
             dc_pause_btn: DRectButton::new(),
             dhint_btn: DRectButton::new(),
             opt_btn: DRectButton::new(),
+            low_quality_btn: DRectButton::new(),
+            aa_btn: DRectButton::new(),
             use_keyboard_btn: DRectButton::new(),
             speed_slider: Slider::new(0.5..2., 0.05),
             size_slider: Slider::new(0.8..1.2, 0.005),
@@ -1076,6 +1080,26 @@ impl ChartList {
         }
         if self.opt_btn.touch(touch, t) {
             config.aggressive ^= true;
+            return Ok(Some(true));
+        }
+        if self.aa_btn.touch(touch, t) {
+            /* 1 → 2 → 4 → 1 循环。
+               ⚠ 移动端 GPU 基本都是 TBDR：MSAA 的 resolve 在片上完成，
+                 不额外占显存带宽 —— 所以 2x **几乎免费**（PowerVR/Apple 官方
+                 文档都是这个结论），4x 才会明显掉帧。这和桌面「MSAA 很贵」的
+                 直觉正好相反。 */
+            config.sample_count = match config.sample_count {
+                1 => 2,
+                2 => 4,
+                _ => 1,
+            };
+            return Ok(Some(true));
+        }
+        if self.low_quality_btn.touch(touch, t) {
+            config.low_quality ^= true;
+            /* 低画质把渲染帧率压到 60；关掉立刻回到屏幕满帧（120）。
+               只影响渲染节奏，判定仍按真实时间算。 */
+            crate::apply_frame_rate(config.low_quality);
             return Ok(Some(true));
         }
         if self.use_keyboard_btn.touch(touch, t) {
@@ -1132,6 +1156,18 @@ impl ChartList {
         item! {
             render_title(ui, tl!("item-opt"), Some(tl!("item-opt-sub")));
             render_switch(ui, rr, t, &mut self.opt_btn, config.aggressive);
+        }
+        item! {
+            render_title(
+                ui,
+                format!("抗锯齿（MSAA {}x）", config.sample_count),
+                Some("1x 关 / 2x 几乎免费 / 4x 明显掉帧。移动端 TBDR 的 resolve 在片上".into()),
+            );
+            render_switch(ui, rr, t, &mut self.aa_btn, config.sample_count > 1);
+        }
+        item! {
+            render_title(ui, "低画质模式", Some("关特效/关粒子/60fps。不影响成绩与上传".into()));
+            render_switch(ui, rr, t, &mut self.low_quality_btn, config.low_quality);
         }
         item! {
             render_title(ui, tl!("item-use-keyboard"), Some(tl!("item-use-keyboard-sub")));

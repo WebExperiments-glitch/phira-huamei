@@ -556,7 +556,10 @@ impl Resource {
 
         let emitter = ParticleEmitter::new(&res_pack, note_scale, res_pack.info.hide_particles)?;
 
-        let no_effect = config.disable_effect || has_no_effect;
+        /* 低画质模式也走这条：关特效 + 不进 MSAA 目标（省一次全屏 blit）。
+           ⚠ 它和 `Mods::NO_SHADER` 的区别：那种是 mod，会进 UNRATED、不算成绩；
+           这里是纯画质开关，成绩照常计入、照常上传。 */
+        let no_effect = config.disable_effect || config.low_quality || has_no_effect;
 
         macroquad::window::gl_set_drawcall_buffer_capacity(MAX_SIZE * 4, MAX_SIZE * 6);
         Ok(Self {

@@ -1057,14 +1057,27 @@ impl SongScene {
             // 谱面摘要 = sha256(谱面文件字节) 的 hex，与 Phira 官方
             // `/chart/{id}/verify-cksum` 同一算法（本文件 update_cksum_task 里
             // 已有同样写法）。服务端据此判断谱面有没有被改过。
-            let huamei_digest: Option<String> = match fs.load_file(&info.chart).await {
-                Ok(bytes) => {
-                    use hex::ToHex;
-                    Some(Sha256::digest(&bytes).encode_hex())
+            /* ⚠ 必须和 `GameScene::load_chart_bytes` 用**同一套回退**：
+               那边读 `info.chart` 失败会再试 `<name>.json`，这里原来只试前者 ——
+               于是「声明 chart.pec、实际是 chart.json」的谱面全都没有摘要，
+               实测覆盖率卡在 96.2%。同谱多局以 digest 为准，缺 4% 就对齐不上。 */
+            let huamei_digest: Option<String> = {
+                use hex::ToHex;
+                let mut bytes = fs.load_file(&info.chart).await.ok();
+                if bytes.is_none() {
+                    if let Some(name) = info.chart.strip_suffix(".pec") {
+                        bytes = fs.load_file(&format!("{name}.json")).await.ok();
+                        if bytes.is_some() {
+                            tracing::info!("huamei: 摘要改读 {name}.json（info.chart 指向的 {}.pec 不存在）", name);
+                        }
+                    }
                 }
-                Err(err) => {
-                    warn!("huamei: 读不到谱面文件，摘要留空（服务端会拒收）：{err}");
-                    None
+                match bytes {
+                    Some(bytes) => Some(Sha256::digest(&bytes).encode_hex()),
+                    None => {
+                        warn!("huamei: 谱面字节读不到，摘要留空：{}", info.chart);
+                        None
+                    }
                 }
             };
             // 没登录就不建发送器 —— 这样结算页不会因为我们没上传而弹错误框。
@@ -1096,6 +1109,8 @@ impl SongScene {
                             improvement: 0,
                             gain_exp: 0.,
                             new_rks: None,
+                            /* 服务端若回「本谱累计第 N 局」就带出来；没有就是 None */
+                            chart_plays: resp.chart_plays,
                         })
                     })
                 }))
