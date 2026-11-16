@@ -307,6 +307,15 @@ pub struct SongScene {
 
     next_scene: Option<NextScene>,
 
+    /// 【话梅】P.H.M. 定数查询状态（方案 B：带进度）。
+    ///
+    /// 详情页一进来就发起，PoW 解算 + 轮询最长 60 秒。
+    /// 期间 UI 显示「分析中…」，拿到结果后替换成实测值。
+    /// 失败不重试（重试由用户退出重进触发），避免频繁请求。
+    phm_diff: Option<prpr::task::Task<crate::difficulty::Difficulty>>,
+    phm_diff_val: Option<crate::difficulty::Difficulty>,
+    phm_diff_failed: bool,
+
     preview: Option<Music>,
     preview_task: Option<Task<Result<AudioClip>>>,
 
@@ -465,6 +474,9 @@ impl SongScene {
             icons,
 
             next_scene: None,
+            phm_diff: None,
+            phm_diff_val: None,
+            phm_diff_failed: false,
 
             preview: None,
             preview_task: Some(Task::new({
@@ -1363,7 +1375,26 @@ impl SongScene {
             item(tl!("info-name"), self.info.name.as_str().into());
             item(tl!("info-composer"), self.info.composer.as_str().into());
             item(tl!("info-charter"), self.info.charter.as_str().into());
-            item(tl!("info-difficulty"), format!("{} ({:.1})", self.info.level, self.info.difficulty).into());
+            /* 【话梅】定数展示：P.H.M. 实测值优先，标称值只作副行。
+               规格明确两个数含义不同 —— ref_const 是实测，difficulty 是谱师自填。
+               未收录时**不留空**（留空会被当成 Bug 上报），显示标称 + 一行说明。 */
+            let diff_text: std::borrow::Cow<str> = match &self.phm_diff_val {
+                Some(d) => match d.source {
+                    crate::difficulty::DifficultySource::Measured => {
+                        let mut t = format!("{} · 实测 {:.2}", self.info.level, d.value);
+                        if let Some(n) = d.nominal {
+                            t.push_str(&format!("（标称 {:.1}）", n));
+                        }
+                        t.into()
+                    }
+                    _ => format!("{} ({:.1}) · 尚未收录", self.info.level, self.info.difficulty).into(),
+                },
+                None if self.phm_diff_failed => {
+                    format!("{} ({:.1}) · 查询失败", self.info.level, self.info.difficulty).into()
+                }
+                None => format!("{} ({:.1}) · 分析中…", self.info.level, self.info.difficulty).into(),
+            };
+            item(tl!("info-difficulty"), diff_text);
             item(tl!("info-desc"), self.info.intro.as_str().into());
             if let Some(entity) = &self.entity {
                 item(tl!("info-rating"), entity.rating.map_or(Cow::Borrowed("NaN"), |r| format!("{:.2} / 5.00", r * 5.).into()));
@@ -1941,6 +1972,23 @@ impl Scene for SongScene {
 
     fn update(&mut self, tm: &mut TimeManager) -> Result<()> {
         let t = tm.now() as f32;
+        /* 【话梅】P.H.M. 定数：懒启动 + 轮询（方案 B：带进度）。
+           放进 update 而不是 render：render 每帧可能被调用多次（侧栏等），
+           而 update 每帧一次，语义更干净。 */
+        if self.phm_diff.is_none() && self.phm_diff_val.is_none() && !self.phm_diff_failed {
+            if let Some(id) = self.info.id {
+                let level = self.info.level.clone();
+                self.phm_diff = Some(prpr::task::Task::new(async move {
+                    crate::difficulty::resolve_full(id, &level).await
+                }));
+            }
+        }
+        if let Some(task) = &mut self.phm_diff {
+            if let Some(d) = task.take() {
+                self.phm_diff_val = Some(d);
+                self.phm_diff = None;
+            }
+        }
         self.menu.update(t);
         self.fav_menu.update(t);
         if self.fav_btn.update_long_touch(t, &mut self.fav_long_touch) {
