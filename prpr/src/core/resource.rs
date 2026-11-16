@@ -641,7 +641,6 @@ impl Resource {
             (x + ((w - rw) / 2.).round() as i32, y + ((h - rh) / 2.).round() as i32, rw as i32, rh as i32)
         }
         let chart_ar = self.config.aspect_ratio.unwrap_or(self.info.aspect_ratio);
-        let screen_ar = vp.2 as f32 / vp.3 as f32;
 
         /* ── 竖屏铺满：把「谱面比例」和「视图比例」分开（2026-11-15 重构）──
          *

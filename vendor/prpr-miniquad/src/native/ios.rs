@@ -40,6 +40,26 @@ fn store_safe_area(top: f32, left: f32, bottom: f32, right: f32) {
     }
 }
 
+/// 当前窗口的根视图控制器（原始 ObjC 指针，0 表示还没有）。
+///
+/// 【为什么需要它】
+///   系统 UI（文件选择器、输入框）必须从**窗口层级里真实存在**的控制器呈现。
+///   通过 `UIApplication.connectedScenes` 去找「key window」在本项目里并不可靠：
+///   我们的窗口是 legacy 方式建的（Info.plist 没有 UIApplicationSceneManifest），
+///   拿到的可能是另一个窗口的 VC。从那种 VC 上 present，弹窗会显示出来，
+///   但**内容区一片空白** —— 文件选择器的远程视图挂不上宿主。
+///
+///   这个指针就是 `did_finish_launching_with_options` 里 setRootViewController
+///   的那个 GLKViewController，用它呈现不会错。
+pub fn root_view_controller_raw() -> Option<usize> {
+    let p = *VIEW_CTRL_OBJ.lock().ok()?;
+    if p == 0 {
+        None
+    } else {
+        Some(p)
+    }
+}
+
 /// 当前安全区，单位像素：(上, 左, 下, 右)。未取到时全 0。
 ///
 /// 供上层（prpr / phira）把 HUD、按钮、打歌视口缩进安全区，

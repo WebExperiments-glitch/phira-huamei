@@ -356,17 +356,20 @@ pub fn request_file(id: impl Into<String>) {
             let picker = if available!(ios = 14.0.0) {
                 use objc2_uniform_type_identifiers::UTType;
 
-                let ext = |e: &str| UTType::typeWithFilenameExtension(&NSString::from_str(e)).unwrap();
-                let types = NSArray::from_retained_slice(&[
-                    ext("zip"),
-                    ext("pez"),
-                    ext("jpg"),
-                    ext("png"),
-                    ext("jpeg"),
-                    ext("json"),
-                    ext("mp3"),
-                    ext("ogg"),
-                ]);
+                /* ── 用 public.item，而不是按扩展名逐个枚举（2026-11-16 修白屏）──
+                 *
+                 * 原来传的是 [zip, pez, jpg, png, jpeg, json, mp3, ogg] 各自的
+                 * UTType。问题在于 `typeWithFilenameExtension` 对 **未注册的扩展**
+                 * 会返回一个动态类型（dyn.*），而文件浏览器的行为是**只显示
+                 * 与这些类型一致的条目** —— pez 这类冷门扩展一旦退化成动态类型，
+                 * 浏览器就可能一条都匹配不上，表现为「标题和侧栏都在、内容区全白」。
+                 *
+                 * 换成 public.item（所有文件的根类型）后浏览器不再做过滤，
+                 * 用户能看到并选择任意文件；选错的文件由导入逻辑按扩展名拒绝，
+                 * 失败路径本来就有。 */
+                let item = UTType::typeWithIdentifier(&NSString::from_str("public.item"))
+                    .expect("public.item 是文件系统的根类型，系统必然提供");
+                let types = NSArray::from_retained_slice(&[item]);
                 UIDocumentPickerViewController::initForOpeningContentTypes(picker, &types)
             } else {
                 #[allow(deprecated)]
@@ -382,9 +385,30 @@ pub fn request_file(id: impl Into<String>) {
             picker.setDelegate(Some(ProtocolObject::from_ref(&*dlg_obj)));
             DELEGATE.with(|it| *it.borrow_mut() = Some(dlg_obj));
 
-            inputbox::backend::IOS::get_top_view_controller(mtm)
-                .unwrap()
-                .presentViewController_animated_completion(&picker, true, None);
+            /* 呈现者必须是**我们窗口里的根控制器**。
+               `connectedScenes` 在本项目不可靠（legacy 窗口，没有 scene manifest），
+               从错误的 VC 呈现会得到「弹窗在、内容空白」的文件选择器。 */
+            let presented = match miniquad::native::ios::root_view_controller_raw() {
+                Some(raw) => {
+                    use objc2_ui_kit::UIViewController;
+                    let vc: &UIViewController = unsafe { &*(raw as *const UIViewController) };
+                    vc.presentViewController_animated_completion(&picker, true, None);
+                    true
+                }
+                None => false,
+            };
+            if !presented {
+                match inputbox::backend::IOS::get_top_view_controller(mtm) {
+                    Some(vc) => {
+                        vc.presentViewController_animated_completion(&picker, true, None);
+                    }
+                    None => {
+                        show_error(Error::msg("no view controller to present the file picker"));
+                        return;
+                    }
+                }
+            }
+            tracing::info!("picker: 已呈现（root_vc={presented}）");
         } else if #[cfg(target_env = "ohos")] {
             miniquad::native::call_request_callback(format!(r#"{{"action": "chooseFile", "isPhoto": {}}}"#, is_photo));
         } else { // desktop

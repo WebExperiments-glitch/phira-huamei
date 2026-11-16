@@ -383,7 +383,10 @@ impl JudgeLine {
                     _ => {}
                 }
             }
-            let (vw, vh) = (1.1, 1.);
+            /* 取屏幕四角时留一点余量：音符是**以中心点**绘制的一个贴图，
+               正好卡在边缘时只露出下半——看起来就像"最上面一截没渲染"。
+               x 多留 10% 是老行为；y 从 1.0 放到 1.05 是为这个边缘效应。 */
+            let (vw, vh) = (1.1, 1.05);
             let p = [
                 res.screen_to_world(Point::new(-vw, -vh)),
                 res.screen_to_world(Point::new(-vw, vh)),
