@@ -287,6 +287,13 @@ impl JudgeInner {
     pub fn counts(&self) -> [u32; 4] {
         self.counts
     }
+
+    /// 【话梅】早/晚计数（判定条的创新行用）。排除 Miss，与结算页口径一致。
+    pub fn early_late_counts(&self) -> (u32, u32) {
+        let early: u32 = self.early_kind[0..3].iter().sum();
+        let late: u32 = self.late_kind[0..3].iter().sum();
+        (early, late)
+    }
 }
 
 #[rustfmt::skip]
@@ -308,6 +315,19 @@ pub struct JudgeHit {
     pub diff: f64,
 }
 
+/// 【话梅】给实时判定条用的轻量事件。
+///
+/// 和 `judgements`（结算上报用）分开：那条链要完整保留、序列化、和服务端对齐；
+/// 判定条只要「最近几次的偏差」，每帧 drain 掉即可。混用会在多人模式
+/// `drain(..)` 时失同步（见上面 Judgements 的注释）。
+#[derive(Clone, Copy, Debug)]
+pub struct TimingEvent {
+    pub judgement: Judgement,
+    pub diff: f64,
+    /// true = Hold 头部之外的「判定完成」事件（含 Hold 尾判）
+    pub final_note: bool,
+}
+
 type Judgements = Vec<(f64, u32, u32, Result<JudgeHit, bool>)>;
 
 #[repr(C)]
@@ -322,6 +342,8 @@ pub struct Judge {
 
     pub(crate) inner: JudgeInner,
     pub judgements: RefCell<Judgements>,
+    /// 判定条专用事件队列（每帧被 game.rs drain）。不参与上报。
+    timing_events: RefCell<Vec<TimingEvent>>,
 }
 
 #[derive(Default)]
@@ -361,6 +383,7 @@ impl Judge {
 
             inner: JudgeInner::new(chart.lines.iter().map(|it| it.notes.iter().filter(|it| !it.fake).count() as u32).sum()),
             judgements: RefCell::new(Vec::new()),
+            timing_events: RefCell::new(Vec::new()),
         }
     }
 
@@ -369,6 +392,7 @@ impl Judge {
         self.trackers.clear();
         self.inner.reset();
         self.judgements.borrow_mut().clear();
+        self.timing_events.borrow_mut().clear();
     }
 
     /// Advance note pointers past notes before time `t`, marking them as judged.
@@ -398,7 +422,17 @@ impl Judge {
                 diff,
             }),
         ));
+        self.timing_events.borrow_mut().push(TimingEvent {
+            judgement: what,
+            diff,
+            final_note: true,
+        });
         self.inner.commit(what, diff);
+    }
+
+    /// 取走判定条事件（每帧调用）。空队列时不分配。
+    pub fn take_timing_events(&self) -> Vec<TimingEvent> {
+        std::mem::take(&mut *self.timing_events.borrow_mut())
     }
 
     #[inline]
@@ -1029,6 +1063,11 @@ impl Judge {
     #[inline]
     pub fn counts(&self) -> [u32; 4] {
         self.inner.counts()
+    }
+
+    /// 【话梅】早/晚计数，给实时判定条用。
+    pub fn early_late_counts(&self) -> (u32, u32) {
+        self.inner.early_late_counts()
     }
 }
 
