@@ -124,17 +124,23 @@ impl ScoreHistoryEntry {
     }
 }
 
-/// 历史最多留多少条。
+/// 历史保留上限。
 ///
-/// R10+B20 只需要 30 项，但保留更多才能让「最近 10 次」在长期游玩后仍然准确
-/// 反映近期状态。200 条按每局 ~200 字节算约 40 KB，写进 data.json 无压力。
-pub const HISTORY_LIMIT: usize = 200;
+/// 【2026-11-16 用户要求】从 200 改为**不裁剪**：所有对局都要留下，
+/// 这是 B30 / 进步曲线 / 长期统计的数据基础，删了就找不回来。
+///
+/// 体积：每条 `ScoreHistoryEntry` 约 24 字节（JSON 里约 90 字节），
+/// 打 5000 局约 450 KB —— 对 `data.json` 完全可接受。
+/// 这里的 100000 只是一个防爆上限（异常数据/死循环写入的保护），
+/// 正常玩家一辈子也到不了。
+pub const HISTORY_LIMIT: usize = 100_000;
 
-/// 追加一条历史，并把长度裁到上限。
+/// 追加一条历史。
+///
+/// 正常路径下**不裁剪**；只有超过防爆上限（10 万条）才丢弃最旧的。
 pub fn push_history(history: &mut Vec<ScoreHistoryEntry>, entry: ScoreHistoryEntry) {
     history.push(entry);
     if history.len() > HISTORY_LIMIT {
-        // 按时间保留最近的
         history.sort_by_key(|e| e.played_at);
         let drop = history.len() - HISTORY_LIMIT;
         history.drain(0..drop);
@@ -217,16 +223,16 @@ mod tests {
     }
 
     #[test]
-    fn history_trims_to_limit() {
+    fn history_keeps_all_normal_games() {
+        // 【用户要求】所有对局都要保存，不再按 200 条裁剪
         let mut h = Vec::new();
-        for i in 0..(HISTORY_LIMIT + 50) {
+        for i in 0..2000 {
             push_history(&mut h, ScoreHistoryEntry {
                 chart_id: i as i32, difficulty: 15., acc: 0.95, score: 900000, played_at: i as i64,
             });
         }
-        assert_eq!(h.len(), HISTORY_LIMIT);
-        // 保留的应该是最新的那批
-        assert_eq!(h.last().unwrap().played_at, (HISTORY_LIMIT + 49) as i64);
+        assert_eq!(h.len(), 2000, "2000 局应该全部保留");
+        assert_eq!(h.last().unwrap().played_at, 1999);
     }
 
     #[test]
