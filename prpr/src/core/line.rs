@@ -414,6 +414,20 @@ impl JudgeLine {
             /* 反变换出来是「线局部的世界坐标」，乘谱面比例得到谱面单位。 */
             let height_above = p[0].y.max(p[1].y.max(p[2].y.max(p[3].y))) * res.chart_aspect;
             let height_below = -p[0].y.min(p[1].y.min(p[2].y.min(p[3].y))) * res.chart_aspect;
+            /* TEMP 诊断：每秒打一次剔除上限，确认它到底盖没盖满屏 */
+            {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static LAST: AtomicU64 = AtomicU64::new(0);
+                let now = (res.time * 1000.) as u64;
+                if now.saturating_sub(LAST.load(Ordering::Relaxed)) > 1000 {
+                    LAST.store(now, Ordering::Relaxed);
+                    crate::huamei::diag(format!(
+                        "cull: above={:.3} below={:.3} chart_ar={:.3} view_ar={:.3} 可见半高={:.3} line_y={:.3}",
+                        height_above, height_below, res.chart_aspect, res.aspect_ratio,
+                        1. / res.aspect_ratio, self.fetch_pos(res, lines).y
+                    ));
+                }
+            }
             let agg = res.config.aggressive;
             for note in self.notes.iter().take(self.cache.not_plain_count).filter(|it| it.above) {
                 note.render(res, &mut config, bpm_list);

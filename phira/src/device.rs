@@ -54,6 +54,7 @@ pub fn install() -> &'static str {
         motion_summary: crate::motion::finish_round,
         location: crate::location::coord_for_upload,
         safe_area: safe_area_px,
+        log_line: crate::telem::note_str,
     });
 
     let has = info.os_version.is_some() || info.model.is_some() || info.screen.is_some();

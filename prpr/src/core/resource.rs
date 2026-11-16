@@ -690,16 +690,20 @@ impl Resource {
         self.aspect_ratio = view_ar;
         self.camera.zoom.y = -view_ar;
         self.camera.viewport = Some(viewport(view_ar, vp));
-        /* 一行诊断：可视谱面范围（判定线以上）随窗口怎么变，一眼能看出来。
-           竖屏 iPad 11" 自然姿态应当是 ≈1.43；窗口拉高会线性变大。 */
-        tracing::info!(
-            "viewport {}x{} chart_ar={:.3} view_ar={:.3} 可视谱面范围={:.2}",
+        /* 一行诊断：把「算出来的视口」和「实际屏幕」一起打出去。
+           竖屏疑似「上下各空一截」时，看这一行就能判断是 view_ar 不对、
+           还是相机视口被 letterbox 了 —— 不用再猜。
+           iOS 上走 Documents/motion.log（NSLog 没有 Mac 读不到）。 */
+        crate::huamei::diag(format!(
+            "viewport: screen={}x{} chart_ar={:.3} view_ar={:.3} 可视范围={:.2} cam_vp={:?} dpi={}",
             vp.2,
             vp.3,
             chart_ar,
             view_ar,
-            chart_ar / view_ar
-        );
+            chart_ar / view_ar,
+            self.camera.viewport,
+            self.dpi
+        ));
         true
     }
 

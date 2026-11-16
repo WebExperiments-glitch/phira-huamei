@@ -47,6 +47,13 @@ pub fn note(msg: impl AsRef<str>) {
     sink::append(msg);
 }
 
+/// `note` 的**单态**版本。
+/// 泛型函数 `note::<T>` 不能直接当 `fn(&str)` 用（每个 T 是一个不同的函数项），
+/// 而 `PlatformHooks.log_line` 要的是具体函数指针。
+pub fn note_str(s: &str) {
+    note(s);
+}
+
 /// 一条告警级诊断。iOS 上同时落盘，并带 `WARN` 前缀。
 #[cfg(target_os = "ios")]
 pub fn note_warn(msg: impl AsRef<str>) {

@@ -131,6 +131,19 @@ pub struct PlatformHooks {
     pub location: fn() -> Option<[f64; 2]>,
     /// 安全区 (上, 左, 下, 右)，像素
     pub safe_area: fn() -> (f32, f32, f32, f32),
+    /// 写一行诊断到可导出的地方（iOS 上是 Documents/motion.log）。
+    /// prpr 的 tracing 在 iOS 只走 NSLog —— 没有 Mac 就读不到，
+    /// 涉及渲染参数的排查必须走这条路。
+    pub log_line: fn(&str),
+}
+
+/// 写一条诊断。未注册时退化成 tracing（桌面端照常输出）。
+pub fn diag(msg: impl AsRef<str>) {
+    let msg = msg.as_ref();
+    match hooks() {
+        Some(h) => (h.log_line)(msg),
+        None => tracing::info!("{msg}"),
+    }
 }
 
 static HOOKS: std::sync::OnceLock<PlatformHooks> = std::sync::OnceLock::new();
