@@ -45,8 +45,8 @@ pub const API_URL: &str = match option_env!("HUAMEI_API_BASE") {
 /// **改动客户端行为就 +1**，否则线上出问题时分不清批次。
 /// ⚠ 服务端**不**用它做任何门控（只存不判），所以升级无兼容风险。
 ///   它长期停在 `huamei.1`，中间攒了 9 次改动都没动 —— 别学。
-/// 本次 +1：渲染参数诊断（viewport / chart_ar / view_ar / cam_vp 落 motion.log）。
-pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.38";
+/// 本次 +1：修剔除上限的判定线位移符号（横屏露白），并按上游留 1.5x 余量。
+pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.39";
 
 /// 站点根 —— 取谱代理、云端鉴权、成绩上报都挂在它下面。
 ///

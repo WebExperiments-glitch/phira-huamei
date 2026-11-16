@@ -385,49 +385,34 @@ impl JudgeLine {
             }
             /* ── 判定线上下各要渲染多少个谱面单位 ──
              *
-             * ⚠ 这里踩过两次坑，都是同一个原因：**传进去的坐标系不对**。
+             * 【上游怎么写的】
+             *   upstream: height_above = screen_to_world(±1).y_max * aspect_ratio
+             *   它拿 NDC 的 1.0 乘上 aspect_ratio —— 也就是说**故意多渲染 ~43%**
+             *   （1.43 对可见的 1.0）。这份余量就是它的安全垫：判定线有位移、
+             *   音符贴图有半高、甚至四舍五入误差，都不会露白。
              *
-             * `res.screen_to_world()` 实际做的是「世界坐标 → 判定线局部坐标」
-             * （对 model_stack 求逆，只含旋转和平移），它**不是** NDC 变换。
-             * 而世界坐标的纵向范围是 ±1/aspect_ratio，不是 ±1。
+             * 【我们踩的坑】
+             *   2026-11-16 我为了「精确」把 NDC 换算成世界坐标，得到 1.05 ——
+             *   余量从 43% 掉到 5%。横屏本来靠这 43% 撑着，一缩就露馅；
+             *   竖屏再叠加判定线偏移，直接空一大片。
+             *   **不要动坐标系，只要保证「渲染范围 ≥ 可见范围 × 余量」。**
              *
-             * 以前传的是 ±1（NDC 的值）：
-             *   · 横屏 aspect_ratio = 1.43 → 少算 30%，但因为横屏本来就看不满，
-             *     没人发现；
-             *   · 竖屏 aspect_ratio = 0.706 → 少算 42%，音符要掉到屏幕 40% 高度
-             *     才被渲染，上方一大片空着；
-             *   · 再叠加判定线自身的 y 偏移（这一局线在 -0.5），误差更大 ——
-             *     表现就是「长条能铺满全屏，但音符只到某条线才出现」，
-             *     因为长条本体不参与剔除，音符贴图参与。
-             *
-             * 现在直接传世界坐标：y 的半个范围 = 1/aspect_ratio，再留 5% 余量
-             * （音符以中心绘制，卡在边缘时只露一半）。x 的世界范围本来就是 ±1，
-             * 1.1 是老余量，不动。 */
-            let half_h = 1. / res.aspect_ratio;
-            let (vw, vh) = (1.1, half_h * 1.05);
-            let p = [
-                res.screen_to_world(Point::new(-vw, -vh)),
-                res.screen_to_world(Point::new(-vw, vh)),
-                res.screen_to_world(Point::new(vw, -vh)),
-                res.screen_to_world(Point::new(vw, vh)),
-            ];
-            /* 反变换出来是「线局部的世界坐标」，乘谱面比例得到谱面单位。 */
-            let height_above = p[0].y.max(p[1].y.max(p[2].y.max(p[3].y))) * res.chart_aspect;
-            let height_below = -p[0].y.min(p[1].y.min(p[2].y.min(p[3].y))) * res.chart_aspect;
-            /* TEMP 诊断：每秒打一次剔除上限，确认它到底盖没盖满屏 */
-            {
-                use std::sync::atomic::{AtomicU64, Ordering};
-                static LAST: AtomicU64 = AtomicU64::new(0);
-                let now = (res.time * 1000.) as u64;
-                if now.saturating_sub(LAST.load(Ordering::Relaxed)) > 1000 {
-                    LAST.store(now, Ordering::Relaxed);
-                    crate::huamei::diag(format!(
-                        "cull: above={:.3} below={:.3} chart_ar={:.3} view_ar={:.3} 可见半高={:.3} line_y={:.3}",
-                        height_above, height_below, res.chart_aspect, res.aspect_ratio,
-                        1. / res.aspect_ratio, self.fetch_pos(res, lines).y
-                    ));
-                }
-            }
+             * 【现在的写法】
+             *   直接由两个比例算，不经过 screen_to_world（那函数的单位太隐晦）：
+             *     可见（世界）= 1/aspect_ratio，谱面 = × chart_aspect
+             *     判定线自身位移 line_y 也是世界坐标，一并加进去
+             *     最后 ×1.5 余量（上游是 1.43，取整到 1.5 更保险）
+             *   横屏：结果与上游基本一致（1.5 vs 1.43）；竖屏：自动跟着变高。 */
+            let line_y = self.fetch_pos(res, lines).y;
+            let half_world = 1. / res.aspect_ratio;
+            const RENDER_MARGIN: f32 = 1.5;
+            /* ⚠ 符号：屏幕上边界在世界坐标是 +half_world，判定线在 line_y。
+               判定线**以上**的可视范围 = half_world - line_y（线越靠下，上方越大）。
+               2026-11-16 写反过一次：线一往下移，上限反而变小，横屏竖屏一起露白。 */
+            let height_above =
+                (half_world - line_y) * res.chart_aspect * RENDER_MARGIN;
+            let height_below =
+                (half_world + line_y) * res.chart_aspect * RENDER_MARGIN;
             let agg = res.config.aggressive;
             for note in self.notes.iter().take(self.cache.not_plain_count).filter(|it| it.above) {
                 note.render(res, &mut config, bpm_list);
