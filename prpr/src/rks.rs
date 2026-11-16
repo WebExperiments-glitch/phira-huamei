@@ -94,6 +94,59 @@ pub fn rks_delta(before: &[ScoreEntry], after: &[ScoreEntry]) -> f32 {
     (player_rks(after) - player_rks(before)).max(0.)
 }
 
+
+/// 本地成绩历史的一条记录。
+///
+/// 存盘用这个（自带 chart_id 与定数），算 RKS 时再转成 [`ScoreEntry`]。
+/// 定数一并存下来是刻意的：PHM 的引擎升级可能改定数，
+/// 但「当时那一局按当时定数得了多少分」不该被追溯修改。
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScoreHistoryEntry {
+    pub chart_id: i32,
+    pub difficulty: f32,
+    /// 0~1
+    pub acc: f32,
+    pub score: i32,
+    /// Unix 毫秒
+    pub played_at: i64,
+}
+
+impl ScoreHistoryEntry {
+    pub fn rks(&self) -> f32 {
+        song_rks(self.difficulty, self.acc as f64)
+    }
+
+    pub fn to_entry(self) -> ScoreEntry {
+        ScoreEntry {
+            rks: self.rks(),
+            played_at: self.played_at,
+        }
+    }
+}
+
+/// 历史最多留多少条。
+///
+/// R10+B20 只需要 30 项，但保留更多才能让「最近 10 次」在长期游玩后仍然准确
+/// 反映近期状态。200 条按每局 ~200 字节算约 40 KB，写进 data.json 无压力。
+pub const HISTORY_LIMIT: usize = 200;
+
+/// 追加一条历史，并把长度裁到上限。
+pub fn push_history(history: &mut Vec<ScoreHistoryEntry>, entry: ScoreHistoryEntry) {
+    history.push(entry);
+    if history.len() > HISTORY_LIMIT {
+        // 按时间保留最近的
+        history.sort_by_key(|e| e.played_at);
+        let drop = history.len() - HISTORY_LIMIT;
+        history.drain(0..drop);
+    }
+}
+
+/// 从历史算个人 RKS。
+pub fn player_rks_from_history(history: &[ScoreHistoryEntry]) -> f32 {
+    let entries: Vec<ScoreEntry> = history.iter().map(|e| e.to_entry()).collect();
+    player_rks(&entries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +214,25 @@ mod tests {
         entries.push(ScoreEntry { rks: 0.5, played_at: 999 });
         let after = player_rks(&entries);
         assert!(after != before, "最近一次应影响结果");
+    }
+
+    #[test]
+    fn history_trims_to_limit() {
+        let mut h = Vec::new();
+        for i in 0..(HISTORY_LIMIT + 50) {
+            push_history(&mut h, ScoreHistoryEntry {
+                chart_id: i as i32, difficulty: 15., acc: 0.95, score: 900000, played_at: i as i64,
+            });
+        }
+        assert_eq!(h.len(), HISTORY_LIMIT);
+        // 保留的应该是最新的那批
+        assert_eq!(h.last().unwrap().played_at, (HISTORY_LIMIT + 49) as i64);
+    }
+
+    #[test]
+    fn history_entry_rks_uses_stored_difficulty() {
+        let e = ScoreHistoryEntry { chart_id: 1, difficulty: 15., acc: 1.0, score: 1000000, played_at: 0 };
+        assert!((e.rks() - 15.).abs() < 1e-4);
     }
 
     #[test]

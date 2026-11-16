@@ -19,6 +19,8 @@ pub mod deeplink;
 /// 【huamei 新增】huamei 账号登录 + 成绩上报。
 /// 契约见 `docs/规范/数据飞轮契约.md`。
 pub mod huamei;
+/// 【话梅】谱面定数客户端（PHM 开放平台）
+mod difficulty;
 mod icons;
 mod images;
 mod login;

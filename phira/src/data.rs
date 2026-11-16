@@ -105,6 +105,16 @@ pub struct Data {
     pub me: Option<User>,
     pub charts: Vec<LocalChart>,
     pub local_records: HashMap<String, Option<SimpleRecord>>,
+    /// 【话梅】成绩历史，用于本地计算 RKS（R10+B20）。
+    ///
+    /// 与 `local_records` 的分工：
+    /// · `local_records` —— 每谱**最高分**，谱面库列表用，key 是本地路径
+    /// · `score_history` —— **逐局**明细（含 chart_id / 定数 / acc / 时间），算 RKS 用
+    ///
+    /// 两者不能合并：R10 需要「最近 10 次」的时序信息，最高分记录里没有。
+    /// 历史上限见 `prpr::rks::HISTORY_LIMIT`（200 条）。
+    #[serde(default)]
+    pub score_history: Vec<prpr::rks::ScoreHistoryEntry>,
     pub config: Config,
     pub message_check_time: Option<DateTime<Utc>>,
     pub language: Option<String>,
