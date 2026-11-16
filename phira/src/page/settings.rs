@@ -1585,6 +1585,8 @@ struct DebugList {
     touch_debug_btn: DRectButton,
     /// 【话梅】实时判定条开关（对局 HUD，调试分组）
     timing_bar_btn: DRectButton,
+    /// 【话梅】判定范围可视化开关
+    jrange_btn: DRectButton,
 }
 
 impl DebugList {
@@ -1593,6 +1595,7 @@ impl DebugList {
             chart_debug_btn: DRectButton::new(),
             touch_debug_btn: DRectButton::new(),
             timing_bar_btn: DRectButton::new(),
+            jrange_btn: DRectButton::new(),
         }
     }
 
@@ -1613,6 +1616,10 @@ impl DebugList {
         }
         if self.timing_bar_btn.touch(touch, t) {
             config.show_timing_bar ^= true;
+            return Ok(Some(true));
+        }
+        if self.jrange_btn.touch(touch, t) {
+            config.show_judgement_range ^= true;
             return Ok(Some(true));
         }
         Ok(None)
@@ -1651,6 +1658,14 @@ impl DebugList {
                 Some("对局中显示偏差轴 + 早晚倾向（不影响成绩）".into()),
             );
             render_switch(ui, rr, t, &mut self.timing_bar_btn, config.show_timing_bar);
+        }
+        item! {
+            render_title(
+                ui,
+                "判定范围可视化",
+                Some("青=Perfect 绿=Good 橙=Bad；只读叠加，不影响判定".into()),
+            );
+            render_switch(ui, rr, t, &mut self.jrange_btn, config.show_judgement_range);
         }
         (w, h)
     }

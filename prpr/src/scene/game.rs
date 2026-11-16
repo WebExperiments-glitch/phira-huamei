@@ -1329,6 +1329,12 @@ impl Scene for GameScene {
 
         self.chart.render(ui, res);
 
+        /* 【话梅】判定范围可视化：紧跟在谱面绘制之后、同一个相机里画，
+           这样坐标与音符完全对齐。纯只读叠加，不碰 note/judge 状态。 */
+        if res.config.show_judgement_range {
+            crate::judgement_range::render(&self.chart, res);
+        }
+
         self.gl.quad_gl.render_pass(
             res.chart_target
                 .as_ref()

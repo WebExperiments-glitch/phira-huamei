@@ -22,6 +22,8 @@ pub mod task;
 pub mod taa;
 /// 【话梅】高质量空间上采样（MetalFX Spatial 的 GLES 等效实现）
 pub mod upscale;
+/// 【话梅】判定范围可视化（参考 PhiraiAd，用常量窗口重写）
+pub mod judgement_range;
 /// 【话梅】实时判定条（参考 PhiraiAd，自包含重写）
 pub mod timing_bar;
 pub mod time;

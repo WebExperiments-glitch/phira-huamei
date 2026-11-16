@@ -91,6 +91,13 @@ pub struct Config {
     pub preferred_sample_rate: Option<u32>,
     pub res_pack_path: Option<String>,
     pub sample_count: u32,
+    /// 【话梅】判定范围可视化（调试用）。
+    ///
+    /// 对每个未判定的音符，把它在判定窗口起止时刻的位置差画成矩形：
+    /// 青色 = Perfect 区、绿色 = Good 区、橙色 = Bad 区。
+    /// 纯只读叠加，不参与判定、不影响成绩。
+    #[serde(default)]
+    pub show_judgement_range: bool,
     /// 【话梅】成绩上报（遥测）总开关。
     ///
     /// 合规要求（《个人信息保护法》第 15/16 条）：处理个人信息应取得同意，
@@ -159,6 +166,7 @@ impl Default for Config {
             sample_count: 1,
             taa: false,
             telemetry_enabled: true,
+            show_judgement_range: false,
             render_scale: 1.,
             fps_limit: 0,
             show_acc: false,

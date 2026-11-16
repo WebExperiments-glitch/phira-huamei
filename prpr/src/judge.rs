@@ -188,7 +188,22 @@ impl JudgeInner {
 
     pub fn commit(&mut self, what: Judgement, diff: f64) {
         use Judgement::*;
-        if matches!(what, Judgement::Good) {
+        /* 【话梅 2026-11-16 修】`diffs` 原来**只收 Good** —— 而 early_kind/late_kind
+           统计的是**所有判定**。两套口径不一致，于是结算页会出现
+           「早 209 / 晚 130，误差 ±0ms」这种自相矛盾的组合：
+
+             这局只有 1 个 Good → diffs 只有 1 个样本 → n < 2 → std 直接给 0。
+             但早/晚是 576 个 Perfect 一起统计出来的。
+
+           现在统一：收所有**非零**偏差（Drag/Flick 的硬编码 0 排除，
+           零偏移既不算早也不算晚，进 diffs 只会拉低标准差、让结果失真）。
+
+           影响面（已确认）：
+             · result().std   —— 从「Good 的离散度」变成「全谱偏差离散度」，语义更正确
+             · result().early/late —— 同源，与结算页的分档早晚条口径一致
+             · 上报的 timing/early/late 字段 —— 数值会变，但这是**修正**而非破坏；
+               历史数据仍可反序列化，服务端按 judged_ver 分层即可 */
+        if diff != 0. {
             self.diffs.push(diff);
         }
         if diff < 0. {
@@ -247,12 +262,10 @@ impl JudgeInner {
            现在真算出来：`diffs` 的**总体**标准差（不是样本标准差 ——
            这是这一局的全部数据，没有"用样本估计总体"的意思）。
 
-           ⚠ 口径要说清楚，别让读的人误解：`diffs` 目前**只收 Good 判定**
-             （见 `commit()` 里那句 `if matches!(what, Judgement::Good)`），
-             所以这个数是「你那些差点没 Perfect 的音符偏了多少」，
-             **不是全谱偏差**。改成全谱口径要先让 `commit()` 收下所有判定 ——
-             那会改变上报数据的含义（`early`/`late`/`std` 都是从这里来的），
-             得先想清楚再动，不能顺手改。 */
+           ⚠ 口径（2026-11-16 已统一）：`diffs` 现在收**所有判定的非零偏差**。
+             曾经只收 Good，导致「早 209/晚 130 却显示 ±0ms」——
+             这局只有 1 个 Good，样本不足直接归零。
+             现在 std 与 early/late 来自同一份数据，不会再自相矛盾。 */
         let timed: Vec<f64> = self.diffs.iter().copied().filter(|d| *d != 0.).collect();
         let n = timed.len();
         let std = if n < 2 {
