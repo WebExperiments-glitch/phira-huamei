@@ -24,6 +24,8 @@ pub mod taa;
 pub mod upscale;
 /// 【话梅】判定范围可视化（参考 PhiraiAd，用常量窗口重写）
 pub mod judgement_range;
+/// 【话梅】RKS 计算（官方 Phira 口径：单曲公式 + R10+B20）
+pub mod rks;
 /// 【话梅】实时判定条（参考 PhiraiAd，自包含重写）
 pub mod timing_bar;
 pub mod time;
