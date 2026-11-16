@@ -383,29 +383,37 @@ impl JudgeLine {
                     _ => {}
                 }
             }
-            /* 取屏幕四角时留一点余量：音符是**以中心点**绘制的一个贴图，
-               正好卡在边缘时只露出下半——看起来就像"最上面一截没渲染"。
-               x 多留 10% 是老行为；y 从 1.0 放到 1.05 是为这个边缘效应。 */
-            let (vw, vh) = (1.1, 1.05);
+            /* ── 判定线上下各要渲染多少个谱面单位 ──
+             *
+             * ⚠ 这里踩过两次坑，都是同一个原因：**传进去的坐标系不对**。
+             *
+             * `res.screen_to_world()` 实际做的是「世界坐标 → 判定线局部坐标」
+             * （对 model_stack 求逆，只含旋转和平移），它**不是** NDC 变换。
+             * 而世界坐标的纵向范围是 ±1/aspect_ratio，不是 ±1。
+             *
+             * 以前传的是 ±1（NDC 的值）：
+             *   · 横屏 aspect_ratio = 1.43 → 少算 30%，但因为横屏本来就看不满，
+             *     没人发现；
+             *   · 竖屏 aspect_ratio = 0.706 → 少算 42%，音符要掉到屏幕 40% 高度
+             *     才被渲染，上方一大片空着；
+             *   · 再叠加判定线自身的 y 偏移（这一局线在 -0.5），误差更大 ——
+             *     表现就是「长条能铺满全屏，但音符只到某条线才出现」，
+             *     因为长条本体不参与剔除，音符贴图参与。
+             *
+             * 现在直接传世界坐标：y 的半个范围 = 1/aspect_ratio，再留 5% 余量
+             * （音符以中心绘制，卡在边缘时只露一半）。x 的世界范围本来就是 ±1，
+             * 1.1 是老余量，不动。 */
+            let half_h = 1. / res.aspect_ratio;
+            let (vw, vh) = (1.1, half_h * 1.05);
             let p = [
                 res.screen_to_world(Point::new(-vw, -vh)),
                 res.screen_to_world(Point::new(-vw, vh)),
                 res.screen_to_world(Point::new(vw, -vh)),
                 res.screen_to_world(Point::new(vw, vh)),
             ];
-            /* ── NDC → 谱面单位：必须乘 chart_aspect / aspect_ratio ──
-             *
-             * `screen_to_world` 这里拿到的是 NDC（±1 就是屏幕边缘），不是世界坐标；
-             * 世界坐标 = NDC / aspect_ratio（相机缩放），谱面 = 世界 × chart_aspect。
-             * 两个比例相除才是完整换算。
-             *
-             * ⚠ 2026-11-16 实测：漏除 aspect_ratio 时，横屏（两者相等，系数 1）
-             *   完全看不出来；竖屏算出 1.0，而屏幕实际能看到 1.6 ——
-             *   音符要降到 62% 高度才被渲染，上方永远空一截。
-             *   这个值直接决定「往上有多少音符要渲染」，也就是竖屏能看多远。 */
-            let y_factor = res.chart_aspect / res.aspect_ratio;
-            let height_above = p[0].y.max(p[1].y.max(p[2].y.max(p[3].y))) * y_factor;
-            let height_below = -p[0].y.min(p[1].y.min(p[2].y.min(p[3].y))) * y_factor;
+            /* 反变换出来是「线局部的世界坐标」，乘谱面比例得到谱面单位。 */
+            let height_above = p[0].y.max(p[1].y.max(p[2].y.max(p[3].y))) * res.chart_aspect;
+            let height_below = -p[0].y.min(p[1].y.min(p[2].y.min(p[3].y))) * res.chart_aspect;
             let agg = res.config.aggressive;
             for note in self.notes.iter().take(self.cache.not_plain_count).filter(|it| it.above) {
                 note.render(res, &mut config, bpm_list);

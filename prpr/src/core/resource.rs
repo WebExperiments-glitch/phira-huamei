@@ -539,7 +539,11 @@ impl Resource {
         };
 
         let mut audio = create_audio_manger(&config)?;
-        let music = AudioClip::new(fs.load_file(&info.music).await?)?;
+        let music = AudioClip::new(
+            fs.load_file(&info.music)
+                .await
+                .with_context(|| format!("load music {}", info.music))?,
+        )?;
         let track_length = music.length();
         let buffer_size = Some(BUFFER_SIZE);
         let sfx_click = audio.create_sfx(res_pack.sfx_click.clone(), buffer_size)?;

@@ -232,7 +232,9 @@ impl GameScene {
                 r.read()
             }
         }?;
-        chart.load_textures(fs).await?;
+        /* ⚠ 加 context：这里原来直接 `?`，缺文件时只剩一句 "os error 2"，
+           完全看不出缺的是谱面引用的哪张图。2026-11-16 卡了一整轮。 */
+        chart.load_textures(fs).await.context("load chart textures")?;
         chart.settings.hold_partial_cover = info.hold_partial_cover;
         Ok((chart, bytes, format))
     }
