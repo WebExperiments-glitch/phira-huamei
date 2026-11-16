@@ -23,7 +23,7 @@
 //! **会明显画歪**。所以这里复刻 `Note::render` 的坐标推导，只是把时间参数化。
 
 use crate::{
-    core::{AnimFloat, CtrlObject, JudgeLine, Matrix, Note, NoteKind, Resource, Vector},
+    core::{AnimFloat, CtrlObject, JudgeLine, Note, NoteKind, Resource},
     judge::{LIMIT_BAD, LIMIT_GOOD, LIMIT_PERFECT},
     parse::RPE_HEIGHT,
 };
@@ -33,11 +33,13 @@ use macroquad::prelude::*;
 const MIN_RECT_SIZE: f32 = 0.0015;
 const OUTLINE_WIDTH: f32 = 0.003;
 /// 填充透明度。调试层要能看清**音符本身**，所以压得很低。
-const ALPHA: f32 = 0.10;
+const ALPHA: f32 = 0.085;
 
 const PERFECT_COLOR: Color = Color::new(0.30, 0.88, 1.00, 1.0);
 const GOOD_COLOR: Color = Color::new(0.42, 0.92, 0.43, 1.0);
 const BAD_COLOR: Color = Color::new(1.00, 0.62, 0.18, 1.0);
+/// Miss 阈值与 Bad 同界（超出 LIMIT_BAD 即 Miss），用更深的红区分「已经救不回来」。
+const MISS_COLOR: Color = Color::new(1.00, 0.30, 0.35, 1.0);
 
 #[inline]
 fn sample(anim: &AnimFloat, time: f64, default: f32) -> f32 {
@@ -209,6 +211,8 @@ pub fn render(chart: &crate::core::Chart, res: &mut Resource) {
             // 局部半宽 × 矩阵的 x 缩放 → 屏幕半宽
             let half_local = note_half_width(note, line, &ctrl, res);
             let m_center = line_tr * note.now_transform(res, &ctrl, 0., incline_sin);
+            // 屏幕 y = -矩阵 y（谱面相机 zoom 的 y 是负数）
+            let _ = &m_center;
             let sx = m_center[(0, 0)].abs().max(1e-3);
             let half = (half_local * sx).clamp(MIN_RECT_SIZE, 1.0);
 
@@ -218,13 +222,22 @@ pub fn render(chart: &crate::core::Chart, res: &mut Resource) {
                 let b1 = point_base_at(note, line, &ctrl, res, note.height, note.time + w * speed);
                 let m0 = line_tr * note.now_transform(res, &ctrl, b0, incline_sin);
                 let m1 = line_tr * note.now_transform(res, &ctrl, b1, incline_sin);
-                let y0 = m0[(1, 2)];
-                let y1 = m1[(1, 2)];
-                bands[i] = ((y0 + y1) * 0.5, (y1 - y0).abs().max(MIN_RECT_SIZE));
+                let y_early = -m0[(1, 2)]; // 窗口起点（更早 = 更靠上）
+                let y_late = -m1[(1, 2)];  // 窗口终点
+                /* 【只画判定前的一半】
+                   完整窗口是 note.time ± w，所以线上下各 w 的距离。
+                   但判定后的一半在视觉上只会让整块往下盖住判定线，
+                   玩家真正关心的是「提前多久内有效」。
+                   这里以判定时刻的位置（= 线的位置）为底边，向上取一整段。
+                   仍在注释里标明：完整窗口是对称的，只是显示只取上半。 */
+                let bottom = y_late.max(y_early); // 靠下的那条（线的位置）
+                let top = y_early.min(y_late);
+                let h = (bottom - top).max(MIN_RECT_SIZE);
+                bands[i] = (top, h);
             }
 
             items.push(Item {
-                cx: m_center[(0, 2)],
+                cx: m_center[(0, 2)] * if res.config.flip_x() { -1. } else { 1. },
                 cy: bands[2].0,
                 half,
                 bands,
@@ -237,30 +250,42 @@ pub fn render(chart: &crate::core::Chart, res: &mut Resource) {
        这里的坐标会随之翻转，所以直接画即可。 */
     for it in &items {
         // 完全在屏幕外的直接跳过（避免边界糊成一条带）
-        let top_edge = it.bands[0].0 - it.bands[0].1 * 0.5;
-        let bottom_edge = it.bands[0].0 + it.bands[0].1 * 0.5;
+        let top_edge = it.bands[0].0;
+        let bottom_edge = it.bands[0].0 + it.bands[0].1;
         if bottom_edge < -1.9 || top_edge > 1.9 {
             continue;
         }
-        for (i, (cy, h)) in it.bands.iter().enumerate() {
-            let alpha = if i == 2 { ALPHA * 1.6 } else { ALPHA };
-            draw_rectangle(it.cx - it.half, cy - h * 0.5, it.half * 2., *h, Color { a: alpha, ..colors[i] });
-        }
+        /* 【只填充内层，外层只描边】
+           Bad 窗口 0.44 秒换算成距离后是一大块（实测 0.78 单位 ≈ 310px），
+           整块填充会让音符看起来"悬在半空的板"里，玩家反而读不出重点。
+           所以：
+             · Perfect —— 实心（最该看的东西）
+             · Good    —— 淡化填充
+             · Bad     —— **不填充**，只在顶端画一条边界线（容错极限） */
+        /* 【挡视线的教训】整块填充 Bad 会糊住半个屏幕。
+           现在只给 Perfect 淡填充（那是玩家真正要瞄的），
+           Good 极淡，Bad / Miss 只画**横线**（容错极限的位置）。 */
+        let (ptop, ph) = it.bands[2];
+        draw_rectangle(it.cx - it.half, ptop, it.half * 2., ph, Color { a: ALPHA * 1.5, ..PERFECT_COLOR });
+        let (gtop, gh) = it.bands[1];
+        draw_rectangle(it.cx - it.half, gtop, it.half * 2., gh, Color { a: ALPHA * 0.5, ..GOOD_COLOR });
+        let _ = colors;
         // 外框：Bad 边界，一眼看出容错极限
-        let (bcy, bh) = it.bands[0];
-        draw_rectangle_lines(
+        // Miss 阈值：超出即为 Miss —— 一条红线，告诉你「再偏就没了」
+        let (btop, _bh) = it.bands[0];
+        draw_rectangle(
             it.cx - it.half,
-            bcy - bh * 0.5,
+            btop,
             it.half * 2.,
-            bh,
-            OUTLINE_WIDTH,
-            Color { a: 0.55, ..BAD_COLOR },
+            OUTLINE_WIDTH * 0.7,
+            Color { a: 0.9, ..MISS_COLOR },
         );
+
         // Perfect 边界单独描一圈 —— 这是玩家最关心的「稳不稳」
-        let (pcy, ph) = it.bands[2];
+        let (ptop, ph) = it.bands[2];
         draw_rectangle_lines(
             it.cx - it.half,
-            pcy - ph * 0.5,
+            ptop,
             it.half * 2.,
             ph,
             OUTLINE_WIDTH,
@@ -291,6 +316,6 @@ pub fn render(chart: &crate::core::Chart, res: &mut Resource) {
 fn horizon() -> f64 {
     /* 1.6 秒：够看清即将到来的音符，又不至于让顶部堆满还没进视野的矩形
        （之前 3 秒时屏幕上沿会糊成一条色带）。 */
-    1.6
+    1.2
 }
 
