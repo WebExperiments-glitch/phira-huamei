@@ -671,7 +671,16 @@ impl Main {
 }
 
 fn draw_background(tex: Texture2D) {
-    let asp = screen_aspect();
+    draw_background_asp(tex, screen_aspect());
+}
+
+/// 用**调用方给的**比例铺满整屏。
+///
+/// `screen_aspect()` 取的是 quad_gl 当前的视口 —— 它可能是**上一个场景**留下的
+/// （结算场景的相机是另设的）。比例一旦不对，背景就只铺到某一行，
+/// 屏幕下方出现一条硬边（2026-11-16 实拍：约 92% 高度处一条横线）。
+/// 场景自己知道自己的 asp，直接传进来最可靠。
+pub(crate) fn draw_background_asp(tex: Texture2D, asp: f32) {
     let top = 1. / asp;
     draw_image(tex, Rect::new(-1., -top, 2., top * 2.), ScaleType::CropCenter);
     draw_rectangle(-1., -top, 2., top * 2., Color::new(0., 0., 0., 0.3));
