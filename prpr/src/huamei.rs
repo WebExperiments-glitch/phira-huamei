@@ -148,6 +148,61 @@ pub fn diag(msg: impl AsRef<str>) {
 
 static HOOKS: std::sync::OnceLock<PlatformHooks> = std::sync::OnceLock::new();
 
+/// 结算时的成绩记录回调。
+///
+/// 【话梅】prpr 算不出 RKS —— 那需要 phira 的 `get_data()` 与存档。
+/// 所以这里只负责「通知」：一局结束、成绩算好后调用一次，
+/// 由 phira 侧把它写进 `score_history`。
+///
+/// 参数：(chart_id, 难度标签, 准确率 0~1, 分数, Unix 毫秒)
+pub type ScoreRecorder = fn(i32, &str, f32, i32, i64);
+
+static SCORE_RECORDER: std::sync::OnceLock<ScoreRecorder> = std::sync::OnceLock::new();
+
+pub fn install_score_recorder(f: ScoreRecorder) {
+    let _ = SCORE_RECORDER.set(f);
+}
+
+/// 结算时调用。未注册时是空操作。
+pub fn record_score(chart_id: i32, level: &str, acc: f32, score: i32, played_at: i64) {
+    if let Some(f) = SCORE_RECORDER.get() {
+        f(chart_id, level, acc, score, played_at);
+    }
+}
+
+/// 结算页要显示的 RKS 信息。
+#[derive(Clone, Copy, Debug)]
+pub struct RksInfo {
+    /// 本局单曲 rks
+    pub song: f32,
+    /// 打完这局之前的个人 rks
+    pub total_before: f32,
+    /// 打完这局之后的个人 rks
+    pub total_after: f32,
+}
+
+impl RksInfo {
+    pub fn delta(&self) -> f32 {
+        (self.total_after - self.total_before).max(0.)
+    }
+}
+
+/// 计算某局成绩对 RKS 的影响。
+///
+/// prpr 拿不到存档，所以由 phira 提供：传入这一局的信息，
+/// 返回「本局单曲 rks / 打之前 / 打之后」三个数。
+pub type RksProvider = fn(i32, &str, f32) -> Option<RksInfo>;
+
+static RKS_PROVIDER: std::sync::OnceLock<RksProvider> = std::sync::OnceLock::new();
+
+pub fn install_rks_provider(f: RksProvider) {
+    let _ = RKS_PROVIDER.set(f);
+}
+
+pub fn compute_rks(chart_id: i32, level: &str, acc: f32) -> Option<RksInfo> {
+    RKS_PROVIDER.get().and_then(|f| f(chart_id, level, acc))
+}
+
 /// 由 phira 侧在启动时调用一次。重复调用以第一次为准。
 pub fn install_hooks(h: PlatformHooks) {
     let _ = HOOKS.set(h);

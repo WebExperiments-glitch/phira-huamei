@@ -128,6 +128,14 @@ impl EndingScene {
                 ..Default::default()
             },
         )?;
+        /* 【话梅】本地 RKS 预览。
+           与上传无关：用户关掉上报时，本地照样算 —— 那是他自己的成绩。
+           算法在 phira 侧（需要存档），这里只拿结果。 */
+        let rks_info = info.id.and_then(|id| {
+            let level = info.level.split_whitespace().next().unwrap_or("").to_owned();
+            crate::huamei::compute_rks(id, &level, result.accuracy as f32)
+        });
+
         let upload_task = upload_fn
             .as_ref()
             .and_then(|f| record_data.clone().map(|data| (f(data), show_message(tl!("uploading")).handle())));
@@ -154,7 +162,7 @@ impl EndingScene {
                     best,
                     improvement,
                     gain_exp: 0.,
-                    new_rks: None,
+                    new_rks: rks_info.map(|it| it.total_after),
                     chart_plays: None,
                 })
             },
@@ -164,7 +172,8 @@ impl EndingScene {
             info,
             result,
             player_name: config.player_name.clone(),
-            player_rks,
+            // 本地有历史时用本地值，否则退回官方现值
+            player_rks: rks_info.map(|it| it.total_before).or(player_rks),
             autoplay: config.autoplay(),
             use_keyboard: config.use_keyboard,
             speed: config.speed,

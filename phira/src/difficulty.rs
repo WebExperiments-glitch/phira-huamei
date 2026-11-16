@@ -137,3 +137,54 @@ mod tests {
         assert!(!d.is_estimated());
     }
 }
+
+// ── 运行期缓存 ──────────────────────────────────────────────
+//
+// 定数请求是异步的，而结算写入是同步的。两者之间用这个缓存衔接：
+//
+//   结算时 → 查缓存，命中就直接用权威值
+//           → 未命中也**不阻塞**，先用标签估算写进去
+//           → 同时后台拉一次，拉到后**回填**该谱的所有历史记录
+//
+// 「回填」是关键：第一次打新谱时用的是估算值，那不准确；
+// 但等定数真正拿到后，把这条谱面的历史记录全部修正成权威值，
+// 最终结果与「一开始就有定数」完全一致。
+
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+static CACHE: std::sync::LazyLock<RwLock<HashMap<i32, Difficulty>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
+pub fn cached(chart_id: i32) -> Option<Difficulty> {
+    CACHE.read().ok().and_then(|m| m.get(&chart_id).copied())
+}
+
+pub fn remember(chart_id: i32, d: Difficulty) {
+    if let Ok(mut m) = CACHE.write() {
+        m.insert(chart_id, d);
+    }
+}
+
+/// 结算时同步取一个定数：缓存优先，否则用标签估算并在后台补拉。
+pub fn resolve_or_estimate(chart_id: i32, level: &str) -> Difficulty {
+    if let Some(d) = cached(chart_id) {
+        return d;
+    }
+    // 后台补拉，成功则写缓存 + 回填历史
+    prpr::task::Task::new(async move {
+        match fetch_difficulty(chart_id).await {
+            Ok(d) if !d.is_estimated() => {
+                remember(chart_id, d);
+                crate::backfill_difficulty(chart_id, d.value);
+                crate::telem::note(format!("difficulty: {chart_id} -> {:.2}", d.value));
+            }
+            Ok(_) => {}
+            Err(err) => crate::telem::note(format!("difficulty: {chart_id} 拉取失败 {err}")),
+        }
+    });
+    Difficulty {
+        value: difficulty_from_label(level).unwrap_or(1.),
+        source: DifficultySource::FromLabel,
+    }
+}

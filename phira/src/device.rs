@@ -57,6 +57,62 @@ pub fn install() -> &'static str {
         log_line: crate::telem::note_str,
     });
 
+    /* 【话梅】结算时把成绩写进本地历史（供 RKS 的 R10+B20 计算）。
+       prpr 侧只负责「通知」，存档在这里 —— 因为 `get_data()` 是 phira 的。 */
+    prpr::huamei::install_score_recorder(|chart_id, level, acc, score, played_at| {
+        let diff = crate::difficulty::resolve_or_estimate(chart_id, level);
+        let entry = prpr::rks::ScoreHistoryEntry {
+            chart_id,
+            difficulty: diff.value,
+            acc,
+            score,
+            played_at,
+        };
+        let data = crate::get_data_mut();
+        prpr::rks::push_history(&mut data.score_history, entry);
+        drop(data);
+        if let Err(err) = crate::save_data() {
+            tracing::warn!("score_history: 存档失败 {err:?}");
+        }
+    });
+
+    /* 【话梅】结算页的 RKS 预览：本局单曲 rks + 个人 RKS 的变化。
+       注意要**先算 before 再写入 history**，否则自己和自己比，delta 恒为 0。
+       所以这里读当前的 history（不含本局），模拟追加一局后重算。 */
+    prpr::huamei::install_rks_provider(|chart_id, level, acc| {
+        let diff = crate::difficulty::resolve_or_estimate(chart_id, level);
+        let history = &crate::get_data().score_history;
+        /* ⚠ 本局已经被 record_score 写进 history 了（game.rs 里先记后结算）。
+           算「打之前」必须把它排除，否则自己和自己比，delta 恒为 0。
+           判定方式：最后一条是否就是本局（同谱同 acc，且时间是刚刚）。 */
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let is_this_round = |e: &prpr::rks::ScoreHistoryEntry| {
+            e.chart_id == chart_id && (e.acc - acc).abs() < 1e-4 && (now_ms - e.played_at).abs() < 10_000
+        };
+        let history_before = match history.last() {
+            Some(last) if is_this_round(last) => &history[..history.len() - 1],
+            _ => &history[..],
+        };
+        let before = prpr::rks::player_rks_from_history(history_before);
+        let mut after_history = history_before.to_vec();
+        prpr::rks::push_history(
+            &mut after_history,
+            prpr::rks::ScoreHistoryEntry {
+                chart_id,
+                difficulty: diff.value,
+                acc,
+                score: 0,
+                played_at: i64::MAX,
+            },
+        );
+        let after = prpr::rks::player_rks_from_history(&after_history);
+        Some(prpr::huamei::RksInfo {
+            song: prpr::rks::song_rks(diff.value, acc as f64),
+            total_before: before,
+            total_after: after,
+        })
+    });
+
     let has = info.os_version.is_some() || info.model.is_some() || info.screen.is_some();
     tracing::info!(
         "device: os={:?} model={:?} screen={:?} -> {}",

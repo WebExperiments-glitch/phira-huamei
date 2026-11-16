@@ -19,6 +19,29 @@ pub mod deeplink;
 /// 【huamei 新增】huamei 账号登录 + 成绩上报。
 /// 契约见 `docs/规范/数据飞轮契约.md`。
 pub mod huamei;
+/// 【话梅】定数后到时，回填历史里的估算值。
+///
+/// 第一次打一张新谱时缓存是空的，只能先用难度标签估算（"IN.16" -> 16.0）；
+/// 等 PHM 的权威定数拿到后，把这张谱的**所有**历史记录改成权威值 ——
+/// 这样最终结果与「一开始就有定数」完全一致，不会因为首次游玩而固化误差。
+///
+/// 只改 `difficulty`，不动 `acc` / `score` / `played_at`：
+/// 那三项是既成事实，不该被追溯修改。
+fn backfill_difficulty(chart_id: i32, difficulty: f32) {
+    let data = get_data_mut();
+    let mut changed = 0usize;
+    for e in data.score_history.iter_mut() {
+        if e.chart_id == chart_id && (e.difficulty - difficulty).abs() > 1e-4 {
+            e.difficulty = difficulty;
+            changed += 1;
+        }
+    }
+    if changed > 0 {
+        telem::note(format!("difficulty: 回填 {chart_id} 的 {changed} 条历史 -> {difficulty:.2}"));
+        let _ = save_data();
+    }
+}
+
 /// 【话梅】谱面定数客户端（PHM 开放平台）
 mod difficulty;
 mod icons;

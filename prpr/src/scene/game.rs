@@ -1016,6 +1016,18 @@ impl Scene for GameScene {
                         if let Some(chart_id) = self.res.info.id {
                             // level 是展示串（形如 "IN  Lv.14.3"），取首个词当难度标签
                             let level = self.res.info.level.split_whitespace().next().unwrap_or("").to_owned();
+                            /* 【话梅】记录这一局，供本地 RKS（R10+B20）计算。
+                               放在这里而不是 ending.rs：此处同时握有 chart_id、
+                               完整 result 与难度标签，不需要再穿参。
+                               注意**不受下面 upload 条件的影响** —— 用户关掉上报
+                               只是不上传，本地成绩该记还是记。 */
+                            crate::huamei::record_score(
+                                chart_id,
+                                &level,
+                                result.accuracy as f32,
+                                result.score as i32,
+                                chrono::Utc::now().timestamp_millis(),
+                            );
                             let payload = crate::huamei::build_payload(
                                 chart_id,
                                 &level,
