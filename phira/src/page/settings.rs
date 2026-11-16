@@ -39,10 +39,17 @@ const STATUS_PAGE: &str = "https://status.phira.cn";
      符合「网页端在游戏端呈现」的过渡形态；等真正内嵌视图接好，
      把 `AccountList::touch()` 里那四处 `open_url(...)` 换掉就行。
    ══════════════════════════════════════════════════════════════ */
-const URL_PRIVACY: &str = "https://phm.app.workbuddy.host/privacy";
-const URL_CHILD_PRIVACY: &str = "https://phm.app.workbuddy.host/privacy-children";
-const URL_PERSONAL_INFO: &str = "https://phm.app.workbuddy.host/privacy/collect";
-const URL_THIRD_PARTY: &str = "https://phm.app.workbuddy.host/privacy/third-party";
+/* ⚠ 2026-11-16：四个地址全部改到 `/privacy-game*` 命名空间。
+   原来指向 `/privacy` 那一组 —— 但 `/privacy` 是**网页端**政策
+   （拖谱面进浏览器那套），而客户端采集的是逐音符判定 / 位置 / 陀螺仪，
+   两者采集面完全不同，指过去等于让用户读到一份与他无关的披露。
+   `/privacy-children`、`/privacy/collect`、`/privacy/third-party` 三个
+   在站点上本来就没有路由（点开 404）。现在四页都上了站，见
+   phm-web/docs/ARCHITECTURE.md 的站点表。 */
+const URL_PRIVACY: &str = "https://phm.app.workbuddy.host/privacy-game";
+const URL_CHILD_PRIVACY: &str = "https://phm.app.workbuddy.host/privacy-game/children";
+const URL_PERSONAL_INFO: &str = "https://phm.app.workbuddy.host/privacy-game/collect";
+const URL_THIRD_PARTY: &str = "https://phm.app.workbuddy.host/privacy-game/third-party";
 
 struct NameList(String);
 impl<'de> Deserialize<'de> for NameList {
@@ -745,20 +752,24 @@ simple_list!(AccountList, {
         cfg.telemetry_enabled ^= true;
         return Ok(Some(true));
     }
+    /* ⚠ 四处都必须过 `with_sharecode`。
+       2026-11 起平台把 phm.app.workbuddy.host 设成「需要分享码」，
+       裸访问一律 **403** —— 实测过：改完地址但不带码，点开还是 403。
+       helper 在 client.rs，已处理「已有码不重复加」与 `?`/`&` 分隔符。 */
     if this.privacy_btn.touch(touch, t) {
-        let _ = open_url(URL_PRIVACY);
+        let _ = open_url(&crate::client::with_sharecode(URL_PRIVACY));
         return Ok(Some(true));
     }
     if this.child_btn.touch(touch, t) {
-        let _ = open_url(URL_CHILD_PRIVACY);
+        let _ = open_url(&crate::client::with_sharecode(URL_CHILD_PRIVACY));
         return Ok(Some(true));
     }
     if this.personal_btn.touch(touch, t) {
-        let _ = open_url(URL_PERSONAL_INFO);
+        let _ = open_url(&crate::client::with_sharecode(URL_PERSONAL_INFO));
         return Ok(Some(true));
     }
     if this.third_btn.touch(touch, t) {
-        let _ = open_url(URL_THIRD_PARTY);
+        let _ = open_url(&crate::client::with_sharecode(URL_THIRD_PARTY));
         return Ok(Some(true));
     }
     Ok(None)
