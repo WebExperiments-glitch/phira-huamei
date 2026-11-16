@@ -385,34 +385,38 @@ impl JudgeLine {
             }
             /* ── 判定线上下各要渲染多少个谱面单位 ──
              *
-             * 【上游怎么写的】
-             *   upstream: height_above = screen_to_world(±1).y_max * aspect_ratio
-             *   它拿 NDC 的 1.0 乘上 aspect_ratio —— 也就是说**故意多渲染 ~43%**
-             *   （1.43 对可见的 1.0）。这份余量就是它的安全垫：判定线有位移、
-             *   音符贴图有半高、甚至四舍五入误差，都不会露白。
+             * 【上游怎么写的（0.8.2 原始代码）】
+             *     let (vw, vh) = (1.1, 1.);
+             *     let p = [ screen_to_world(±vw, ±vh) 四角 ];
+             *     let height_above = p.y.max() * aspect_ratio;
              *
-             * 【我们踩的坑】
-             *   2026-11-16 我为了「精确」把 NDC 换算成世界坐标，得到 1.05 ——
-             *   余量从 43% 掉到 5%。横屏本来靠这 43% 撑着，一缩就露馅；
-             *   竖屏再叠加判定线偏移，直接空一大片。
-             *   **不要动坐标系，只要保证「渲染范围 ≥ 可见范围 × 余量」。**
+             *   两个要点，缺一个都会「音符从虚空里蹦出来」：
+             *   ① **取四角**：判定线会旋转、会位移，取四角再反变换才覆盖到
+             *      倾斜后的真实可视范围。只算竖直方向会丢一块斜带 ——
+             *      在屏幕上就表现为左右两侧突然冒出音符。
+             *   ② **乘 aspect_ratio**：那一乘等于在可见范围之外再放 43% 余量
+             *      （1.43 对可见的 1.0）。它是安全垫，不是笔误。
              *
-             * 【现在的写法】
-             *   直接由两个比例算，不经过 screen_to_world（那函数的单位太隐晦）：
-             *     可见（世界）= 1/aspect_ratio，谱面 = × chart_aspect
-             *     判定线自身位移 line_y 也是世界坐标，一并加进去
-             *     最后 ×1.5 余量（上游是 1.43，取整到 1.5 更保险）
-             *   横屏：结果与上游基本一致（1.5 vs 1.43）；竖屏：自动跟着变高。 */
-            let line_y = self.fetch_pos(res, lines).y;
+             * 【当前写法】
+             *   保留四角（保住旋转），但输入换成**世界坐标**（±1/aspect_ratio，
+             *   不是 NDC 的 ±1），输出乘 chart_aspect 换到谱面单位，再留 1.5 倍。
+             *   横屏 chart_aspect == aspect_ratio，与上游等价（1.5 vs 1.43，略宽）。
+             *   竖屏自动跟着屏幕变高。 */
             let half_world = 1. / res.aspect_ratio;
             const RENDER_MARGIN: f32 = 1.5;
-            /* ⚠ 符号：屏幕上边界在世界坐标是 +half_world，判定线在 line_y。
-               判定线**以上**的可视范围 = half_world - line_y（线越靠下，上方越大）。
-               2026-11-16 写反过一次：线一往下移，上限反而变小，横屏竖屏一起露白。 */
-            let height_above =
-                (half_world - line_y) * res.chart_aspect * RENDER_MARGIN;
-            let height_below =
-                (half_world + line_y) * res.chart_aspect * RENDER_MARGIN;
+            let (vw, vh) = (half_world * 1.1 * RENDER_MARGIN, half_world * RENDER_MARGIN);
+            let p = [
+                res.screen_to_world(Point::new(-vw, -vh)),
+                res.screen_to_world(Point::new(-vw, vh)),
+                res.screen_to_world(Point::new(vw, -vh)),
+                res.screen_to_world(Point::new(vw, vh)),
+            ];
+            /* 反变换出来是「线局部的世界坐标」，乘谱面比例得到谱面单位。
+               ⚠ 位移符号：屏幕上边界 world = +half_world，判定线在 line_y，
+               所以「线以上」= half_world - line_y。曾经写成 +line_y，
+               线一往下移上限反而变小，横屏直接只剩 47%。 */
+            let height_above = p[0].y.max(p[1].y.max(p[2].y.max(p[3].y))) * res.chart_aspect;
+            let height_below = -p[0].y.min(p[1].y.min(p[2].y.min(p[3].y))) * res.chart_aspect;
             let agg = res.config.aggressive;
             for note in self.notes.iter().take(self.cache.not_plain_count).filter(|it| it.above) {
                 note.render(res, &mut config, bpm_list);
