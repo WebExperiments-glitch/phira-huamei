@@ -58,6 +58,22 @@ impl<T> Tabs<T> {
         }
     }
 
+    /// 每个标签的垂直间距。
+    ///
+    /// 【话梅】原来写死 0.125。加到 9 个分组后，横屏（ui.top≈0.625，
+    /// 可用高度 1.25）从 -top+0.16 开始排，9×0.125=1.125 会直接冲出屏幕底部
+    /// ——「关于」被切掉，且没法滚（Tabs 本来就没有滚动）。
+    ///
+    /// 改成按可用高度反推：够就保持 0.125 的原观感，不够就等比压。
+    /// 下限 0.072 是实测还能看清字、点得中的值；真到下限还装不下，
+    /// 才需要引入滚动（目前 9 项在 16:10 横屏下是 0.112，够用）。
+    fn item_height(&self, ui: &Ui) -> f32 {
+        let n = self.items.len().max(1) as f32;
+        // 上下各留一点余量，避免贴边
+        let avail = (ui.top * 2. - 0.16 - 0.08).max(0.);
+        (avail / n).clamp(0.072, 0.125)
+    }
+
     pub fn selected(&self) -> &T {
         &self.items[self.selected].value
     }
@@ -111,7 +127,14 @@ impl<T> Tabs<T> {
     }
 
     fn render_plain(&mut self, ui: &mut Ui, c: Color, first: bool) {
-        let mut r = Rect::new(Self::LEFT, -ui.top + 0.16, Self::WIDTH, 0.125);
+        let h = self.item_height(ui);
+        /* 垂直居中：整列关于 y=0 对称。
+           ⚠ 这里踩过坑：写成 `(-ui.top*2 + total)/2` 只是把「起点下移」，
+             并没有居中 —— total=1.068 时会排到 +0.948，超出 +0.654 的底边，
+             「调试/关于」照样看不见。正确的是 `-total/2`。 */
+        let total = h * self.items.len() as f32;
+        let start = -total / 2.;
+        let mut r = Rect::new(Self::LEFT, start, Self::WIDTH, h);
         for (index, item) in self.items.iter_mut().enumerate() {
             if index == self.selected {
                 self.y_upper.alter_to(r.y);
@@ -128,7 +151,7 @@ impl<T> Tabs<T> {
                 .size(0.5)
                 .color(c)
                 .draw();
-            r.y += 0.125;
+            r.y += h;
         }
     }
 

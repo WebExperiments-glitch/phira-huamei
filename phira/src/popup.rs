@@ -243,8 +243,16 @@ impl ChooseButton {
         }
     }
 
-    #[inline]
+    /// 弹层高度**按选项数自适应**。
+    ///
+    /// 【话梅】原来 `height` 写死 0.34（≈3.4 项）。抗锯齿有 4 个选项时，
+    /// 最后一项（TAA）被挡在弹层外，得手动滚动才看得到 ——
+    /// 玩家会以为「这个下拉只有三个选项」。
+    ///
+    /// 每项 0.1（Popup 的固定行高），加 0.02 边距；
+    /// 上限 0.62 防止语言列表（15 项）铺满整个屏幕，超出部分照旧可滚。
     pub fn with_options(mut self, options: Vec<String>) -> Self {
+        self.height = (options.len() as f32 * 0.1 + 0.02).min(0.62);
         self.popup = self.popup.with_options(options);
         self
     }
@@ -258,6 +266,13 @@ impl ChooseButton {
     #[inline]
     pub fn selected(&self) -> usize {
         self.popup.selected
+    }
+
+    /// 外部状态变化时把选中项同步过来（比如配置被重置）。
+    /// `with_selected` 只在构造时用，运行期得靠这个。
+    #[inline]
+    pub fn set_selected(&mut self, selected: usize) {
+        self.popup.set_selected(selected);
     }
 
     #[inline]

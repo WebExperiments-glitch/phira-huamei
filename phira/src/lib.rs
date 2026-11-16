@@ -359,6 +359,25 @@ async fn the_main() -> Result<()> {
                 let actual_fps = 1. / (fps_time_sum / FPS_BUF_SIZE as f32);
                 let current_fps = 1. / (t - frame_start);
                 info!("FPS {} (capped at {})", current_fps as u32, actual_fps as u32);
+
+                /* ── 【话梅】帧耗时分位数（2026-11-16，参考 PhiraiAd 的思路）──
+                   原来只有 FPS 均值：偶发的 200ms 卡顿会被 59 个好帧稀释，
+                   看不出「iOS 耗电」到底卡在哪。P95/P99 和慢帧计数能直接暴露。
+                   60 个 f32 排序每秒一次，开销可以忽略；只在诊断通道落盘，
+                   正常玩家无感。 */
+                let mut sorted: Vec<f32> = fps_times.iter().copied().collect();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let q = |p: usize| sorted[p.min(sorted.len() - 1)] * 1000.;
+                let slow = |ms: f32| sorted.iter().filter(|&&x| x * 1000. >= ms).count();
+                crate::telem::note(format!(
+                    "perf: p50={:.1}ms p95={:.1}ms p99={:.1}ms max={:.1}ms slow(16/33/50/100)={}/{}/{}/{} frames={}",
+                    q(FPS_BUF_SIZE * 50 / 100),
+                    q(FPS_BUF_SIZE * 95 / 100),
+                    q(FPS_BUF_SIZE * 99 / 100),
+                    q(FPS_BUF_SIZE - 1),
+                    slow(16.67), slow(33.33), slow(50.), slow(100.),
+                    sorted.len(),
+                ));
             }
         }
 
@@ -665,9 +684,22 @@ pub fn set_chosen_file(file: String) {
 ///
 /// 非 iOS 平台是空操作 —— 桌面的帧率由 config.fps_capped 那套老逻辑管。
 pub fn apply_frame_rate(low_quality: bool) {
+    /* 【话梅】帧率上限改由配置驱动：
+         fps_limit = 0   → 不限（iOS 取屏幕满帧 120）
+         fps_limit = 60/90/120 → 显式上限
+       低画质模式仍然强制 60 —— 它的卖点就是省电，用户既然开了低画质，
+       再给 120 是自相矛盾的。 */
     #[cfg(target_os = "ios")]
     {
-        miniquad::native::ios::set_preferred_fps(if low_quality { 60 } else { 120 });
+        let limit = prpr::get_data().config.fps_limit;
+        let fps = if low_quality {
+            60
+        } else if matches!(limit, 60 | 90 | 120) {
+            limit as i32
+        } else {
+            120
+        };
+        miniquad::native::ios::set_preferred_fps(fps);
     }
     let _ = low_quality;
 }

@@ -265,6 +265,13 @@ pub struct Scroll {
     matrix: Option<Matrix>,
     horizontal: bool,
     clip: ClipType,
+    /// 【话梅】桌面端：不校验鼠标是否落在滚动区内，整页接收滚轮。
+    ///
+    /// 默认逻辑会用 `matrix` 把鼠标坐标变换到滚动区局部坐标再判断范围，
+    /// 那套换算在 **viewport 有偏移 / 缩放**（我们的设置页就是）时会算错，
+    /// 结果滚轮事件被丢弃 —— 表现就是「鼠标滚不动」。
+    /// 设置页只有一个滚动区，不校验也不会误伤别处。
+    wheel_anywhere: bool,
 }
 
 impl Default for Scroll {
@@ -282,7 +289,14 @@ impl Scroll {
             matrix: None,
             horizontal: false,
             clip: ClipType::Scissor,
+            wheel_anywhere: false,
         }
+    }
+
+    /// 桌面端整页接收滚轮（见字段注释）。
+    pub fn use_wheel_anywhere(mut self) -> Self {
+        self.wheel_anywhere = true;
+        self
     }
 
     pub fn use_clip(mut self, clip: ClipType) -> Self {
@@ -317,6 +331,19 @@ impl Scroll {
     }
 
     pub fn update(&mut self, t: f32) {
+        /* 整页滚轮：跳过鼠标位置校验，直接消费。 */
+        if self.wheel_anywhere {
+            let (x, y) = take_wheel();
+            let extra = if self.horizontal { -x } else { -y };
+            let scroller = if self.horizontal { &mut self.x_scroller } else { &mut self.y_scroller };
+            // 没有滚轮时不传 0 —— 那会打断惯性滑动
+            if extra.abs() > f32::EPSILON {
+                scroller.update(t, extra);
+            } else {
+                scroller.update(t, 0.);
+            }
+            return;
+        }
         let extra_scroll = if let Some(matrix) = self.matrix {
             let (mx, my) = mouse_position();
             let vp = crate::ext::get_viewport();

@@ -30,6 +30,20 @@ const ITEM_HEIGHT: f32 = 0.15;
 const INTERACT_WIDTH: f32 = 0.26;
 const STATUS_PAGE: &str = "https://status.phira.cn";
 
+/* ══════════════════════════════════════════════════════════════
+   【话梅】账号页的四个法务/隐私网页入口
+
+   ⚠ 网页技术的人接内嵌 WebView 时，**只改这四个常量**即可：
+     把 URL 换成内嵌页地址，或在这里挂一个「用内嵌视图打开」的回调。
+     现在的行为是 `open_url()` 调系统浏览器 —— 在 iOS 上会跳 Safari，
+     符合「网页端在游戏端呈现」的过渡形态；等真正内嵌视图接好，
+     把 `AccountList::touch()` 里那四处 `open_url(...)` 换掉就行。
+   ══════════════════════════════════════════════════════════════ */
+const URL_PRIVACY: &str = "https://phm.app.workbuddy.host/privacy";
+const URL_CHILD_PRIVACY: &str = "https://phm.app.workbuddy.host/privacy-children";
+const URL_PERSONAL_INFO: &str = "https://phm.app.workbuddy.host/privacy/collect";
+const URL_THIRD_PARTY: &str = "https://phm.app.workbuddy.host/privacy/third-party";
+
 struct NameList(String);
 impl<'de> Deserialize<'de> for NameList {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -131,6 +145,10 @@ static STAFF_LIST: Lazy<StaffList> = Lazy::new(|| {
 enum SettingListType {
     General,
     Audio,
+    Graphics,   // 【话梅】画面
+    Input,      // 【话梅】输入
+    SoundHaptic,// 【话梅】声音 / 触觉
+    Account,    // 【话梅】账号（隐私政策等网页入口）
     Chart,
     Debug,
     About,
@@ -139,6 +157,10 @@ enum SettingListType {
 pub struct SettingsPage {
     list_general: GeneralList,
     list_audio: AudioList,
+    list_graphics: GraphicsList,
+    list_input: InputList,
+    list_sound: SoundHapticList,
+    list_account: AccountList,
     list_chart: ChartList,
     list_debug: DebugList,
 
@@ -157,18 +179,26 @@ impl SettingsPage {
         Self {
             list_general: GeneralList::new(icon_lang),
             list_audio: AudioList::new(),
+            list_graphics: GraphicsList::new(),
+            list_input: InputList::new(),
+            list_sound: SoundHapticList::new(),
+            list_account: AccountList::new(),
             list_chart: ChartList::new(),
             list_debug: DebugList::new(),
 
             tabs: Tabs::new([
                 (SettingListType::General, || tl!("general")),
                 (SettingListType::Audio, || tl!("audio")),
+                (SettingListType::Graphics, || "画面".into()),
+                (SettingListType::Input, || "输入".into()),
+                (SettingListType::SoundHaptic, || "声音/触觉".into()),
+                (SettingListType::Account, || "账号".into()),
                 (SettingListType::Chart, || tl!("chart")),
                 (SettingListType::Debug, || tl!("debug")),
                 (SettingListType::About, || tl!("about")),
-            ] as [(SettingListType, TitleFn); 5]),
+            ] as [(SettingListType, TitleFn); 9]),
 
-            scroll: Scroll::new(),
+            scroll: Scroll::new().use_wheel_anywhere(),
             save_time: f32::INFINITY,
 
             icon,
@@ -194,6 +224,10 @@ impl Page for SettingsPage {
         if match self.tabs.selected() {
             SettingListType::General => self.list_general.top_touch(touch, t),
             SettingListType::Audio => self.list_audio.top_touch(touch, t),
+            SettingListType::Graphics => self.list_graphics.top_touch(touch, t),
+            SettingListType::Input => self.list_input.top_touch(touch, t),
+            SettingListType::SoundHaptic => self.list_sound.top_touch(touch, t),
+            SettingListType::Account => false,
             SettingListType::Chart => self.list_chart.top_touch(touch, t),
             SettingListType::Debug => self.list_debug.top_touch(touch, t),
             SettingListType::About => false,
@@ -211,6 +245,10 @@ impl Page for SettingsPage {
         if let Some(p) = match self.tabs.selected() {
             SettingListType::General => self.list_general.touch(touch, t)?,
             SettingListType::Audio => self.list_audio.touch(touch, t)?,
+            SettingListType::Graphics => self.list_graphics.touch(touch, t)?,
+            SettingListType::Input => self.list_input.touch(touch, t)?,
+            SettingListType::SoundHaptic => self.list_sound.touch(touch, t)?,
+            SettingListType::Account => self.list_account.touch(touch, t)?,
             SettingListType::Chart => self.list_chart.touch(touch, t)?,
             SettingListType::Debug => self.list_debug.touch(touch, t)?,
             SettingListType::About => None,
@@ -229,6 +267,10 @@ impl Page for SettingsPage {
         let changed = match self.tabs.selected() {
             SettingListType::General => self.list_general.update(t)?,
             SettingListType::Audio => self.list_audio.update(t)?,
+            SettingListType::Graphics => self.list_graphics.update(t)?,
+            SettingListType::Input => self.list_input.update(t)?,
+            SettingListType::SoundHaptic => self.list_sound.update(t)?,
+            SettingListType::Account => self.list_account.update(t)?,
             SettingListType::Chart => self.list_chart.update(t)?,
             SettingListType::Debug => self.list_debug.update(t)?,
             SettingListType::About => false,
@@ -259,6 +301,10 @@ impl Page for SettingsPage {
                     self.scroll.render(ui, |ui| match item {
                         SettingListType::General => self.list_general.render(ui, r, t),
                         SettingListType::Audio => self.list_audio.render(ui, r, t),
+                        SettingListType::Graphics => self.list_graphics.render(ui, r, t),
+                        SettingListType::Input => self.list_input.render(ui, r, t),
+                        SettingListType::SoundHaptic => self.list_sound.render(ui, r, t),
+                        SettingListType::Account => self.list_account.render(ui, r, t),
                         SettingListType::Chart => self.list_chart.render(ui, r, t),
                         SettingListType::Debug => self.list_debug.render(ui, r, t),
                         SettingListType::About => render_about(ui, r, &self.icon),
@@ -379,6 +425,344 @@ fn right_rect(w: f32) -> Rect {
     let rh = ITEM_HEIGHT * 2. / 3.;
     Rect::new(w - 0.3, (ITEM_HEIGHT - rh) / 2., INTERACT_WIDTH, rh)
 }
+
+/* ══════════════════════════════════════════════════════════════
+   【话梅】新增的四个设置分组。
+
+   设计原则：**保留原有分组和项**，这里只做「按用途重新归类 + 更清楚的入口」。
+   同一项可能在两处出现（比如抗锯齿在「谱面」和「画面」都有）——
+   两者操作的是**同一个 config 字段**，不会出现状态分叉。
+   ══════════════════════════════════════════════════════════════ */
+
+/// 通用列表的渲染骨架抽出来复用，避免四个新页各写一遍相同的滚动/布局。
+fn render_line(ui: &mut Ui, r: Rect, t: f32, title: &str, sub: &str) -> Rect {
+    render_title(ui, std::borrow::Cow::Borrowed(title), Some(std::borrow::Cow::Borrowed(sub)));
+    ui.dy(ITEM_HEIGHT);
+    Rect::new(r.right() - 0.20, (ITEM_HEIGHT - 0.10) / 2., 0.16, 0.10)
+}
+
+macro_rules! simple_list {
+    ($name:ident, { $($field:ident : $btn:ident),* $(,)? }, $crate_render:expr, $body:expr) => {
+        struct $name { $($btn: DRectButton),* }
+        impl $name {
+            pub fn new() -> Self { Self { $($btn: DRectButton::new()),* } }
+            pub fn top_touch(&mut self, _t: &Touch, _time: f32) -> bool { false }
+            pub fn update(&mut self, _t: f32) -> Result<bool> { Ok(false) }
+            pub fn render(&mut self, ui: &mut Ui, r: Rect, t: f32) -> (f32, f32) {
+                let f: fn(&mut Self, &mut Ui, Rect, f32) -> (f32, f32) = $crate_render;
+                f(self, ui, r, t)
+            }
+            pub fn touch(&mut self, touch: &Touch, t: f32) -> Result<Option<bool>> {
+                let f: fn(&mut Self, &Touch, f32) -> Result<Option<bool>> = $body;
+                f(self, touch, t)
+            }
+        }
+    };
+}
+
+// ── 画面 ──
+/* 【话梅】手写而非用 simple_list! 宏：抗锯齿要的是**下拉列表**（ChooseButton），
+   不是「点一下轮着换」。Rust 生态里这类控件一般叫 dropdown / combo box /
+   pick list；本项目已有 `popup::ChooseButton`（语言选择在用），
+   它 = 一个按钮 + 弹出层，`with_options` 给选项、`with_selected` 给当前项、
+   `changed()` 判断用户是否改了。
+
+   ⚠ 三个生命周期必须都接：
+     · top_touch —— 弹层展开时优先吃掉点击（否则点到下层项）
+     · touch     —— 收起状态下点按钮展开
+     · render_top—— 弹层要在所有内容之后画，否则被后面的项盖住 */
+struct GraphicsList {
+    scale_btn: ChooseButton,
+    aa_btn: ChooseButton,
+    fps_btn: ChooseButton,
+    lowq_btn: DRectButton,
+}
+
+/// 渲染精度档位（百分比）。和绝区零的「渲染精度」同一个概念：
+/// 离屏目标按比例缩小、最后放大铺满屏 —— 直接省填充率。
+const SCALE_OPTIONS: [(&str, f32); 4] = [
+    ("100%（原生）", 1.0),
+    ("85%", 0.85),
+    ("70%", 0.70),
+    ("60%（最省）", 0.60),
+];
+
+/// 帧率档位。0 = 不限制。
+const FPS_OPTIONS: [(&str, u32); 4] = [
+    ("不限制", 0),
+    ("120 帧", 120),
+    ("90 帧", 90),
+    ("60 帧", 60),
+];
+
+fn scale_index(v: f32) -> usize {
+    SCALE_OPTIONS
+        .iter()
+        .position(|(_, s)| (s - v).abs() < 1e-3)
+        .unwrap_or(0)
+}
+
+fn fps_index(v: u32) -> usize {
+    FPS_OPTIONS.iter().position(|(_, f)| *f == v).unwrap_or(0)
+}
+
+impl GraphicsList {
+    pub fn new() -> Self {
+        let c = &get_data().config;
+        Self {
+            scale_btn: ChooseButton::new()
+                .with_options(SCALE_OPTIONS.iter().map(|(n, _)| n.to_string()).collect())
+                .with_selected(scale_index(c.render_scale)),
+            aa_btn: ChooseButton::new()
+                .with_options(vec!["关闭".into(), "MSAA 2x".into(), "MSAA 4x".into(), "TAA".into()])
+                .with_selected(aa_index(c.sample_count, c.taa)),
+            fps_btn: ChooseButton::new()
+                .with_options(FPS_OPTIONS.iter().map(|(n, _)| n.to_string()).collect())
+                .with_selected(fps_index(c.fps_limit)),
+            lowq_btn: DRectButton::new(),
+        }
+    }
+
+    pub fn top_touch(&mut self, touch: &Touch, t: f32) -> bool {
+        /* 【话梅】三个下拉的弹层都要优先接点击。
+           ⚠ 用 `||` 短路而不是 `|`：`|` 会把三个都执行一遍，
+             虽然结果一样，但没必要。 */
+        self.scale_btn.top_touch(touch, t) || self.aa_btn.top_touch(touch, t) || self.fps_btn.top_touch(touch, t)
+    }
+
+    pub fn update(&mut self, t: f32) -> Result<bool> {
+        /* 【话梅 2026-11-16】这三个 update 是**必须**的，不是可选。
+           漏了它们会「点击全部失效」——踩过：
+
+             Popup 的展开/收起动画用 `Fader`，其 `transiting()`
+             就是 `!start_time.is_nan()`。展开时 `show()` 把 start_time
+             设成当前时间，**只有 update() 里的 done() 才会把它清回 NaN**。
+
+           我们最初这里的 update 是空实现，于是：
+             点一次下拉 → start_time 有值 → transiting() 永远 true
+             → `top_touch()` 永远返回 true
+             → 设置页把**所有**点击都当成「弹层在响应」，全部吞掉。
+             表现就是：滚轮能滚（走 Scroll::update），但点什么都没反应。
+
+           语言选择没这个问题，是因为 GeneralList::update 里调了
+           `lang_btn.update(t)`。 */
+        self.scale_btn.update(t);
+        self.aa_btn.update(t);
+        self.fps_btn.update(t);
+        Ok(false)
+    }
+
+    pub fn touch(&mut self, touch: &Touch, t: f32) -> Result<Option<bool>> {
+        if self.scale_btn.touch(touch, t) {
+            return Ok(Some(true));
+        }
+        if self.scale_btn.changed() {
+            let scale = SCALE_OPTIONS[self.scale_btn.selected()].1;
+            get_data_mut().config.render_scale = scale;
+            return Ok(Some(true));
+        }
+
+        if self.aa_btn.touch(touch, t) {
+            return Ok(Some(true));
+        }
+        if self.aa_btn.changed() {
+            // 下拉选中项 → config。TAA 与 MSAA 互斥，这里显式清零避免两边同时开。
+            let config = &mut get_data_mut().config;
+            match self.aa_btn.selected() {
+                0 => { config.sample_count = 1; config.taa = false; }
+                1 => { config.sample_count = 2; config.taa = false; }
+                2 => { config.sample_count = 4; config.taa = false; }
+                _ => { config.sample_count = 1; config.taa = true; }
+            }
+            return Ok(Some(true));
+        }
+
+        if self.fps_btn.touch(touch, t) {
+            return Ok(Some(true));
+        }
+        if self.fps_btn.changed() {
+            let fps = FPS_OPTIONS[self.fps_btn.selected()].1;
+            let low_quality = get_data().config.low_quality;
+            get_data_mut().config.fps_limit = fps;
+            crate::apply_frame_rate(low_quality);
+            return Ok(Some(true));
+        }
+
+        let config = &mut get_data_mut().config;
+        if self.lowq_btn.touch(touch, t) {
+            config.low_quality ^= true;
+            let low = config.low_quality;
+            crate::apply_frame_rate(low);
+            return Ok(Some(true));
+        }
+        Ok(None)
+    }
+
+    pub fn render(&mut self, ui: &mut Ui, r: Rect, t: f32) -> (f32, f32) {
+        let c = &get_data().config;
+        /* ⚠ 这里**绝对不能**用 config 去覆盖 `selected`。
+           踩过坑：在 render 里写 `if want != selected { set_selected(want) }`，
+           而 config 的更新发生在 touch() 里 —— 同一帧 render 在 touch 之后，
+           但 `changed()` 可能要到下一帧才被消费，于是 render 先把用户刚选的
+           那一项改回旧值，再消费 changed() 时读到的又是旧值：
+           **怎么点都选不中**（表现正是「点了没反应」）。
+
+           初始化用 `with_selected` 就够；配置被外部重置（存档加载）时，
+           让用户重新点一下即可，不值得为此引入这个竞态。 */
+
+        let rr = right_rect(r.w);
+        render_title(
+            ui,
+            std::borrow::Cow::Borrowed("渲染精度"),
+            Some(std::borrow::Cow::Borrowed("越低越省电，画面越软")),
+        );
+        self.scale_btn.render(ui, rr, t);
+        ui.dy(ITEM_HEIGHT);
+
+        render_title(
+            ui,
+            std::borrow::Cow::Borrowed("抗锯齿"),
+            Some(std::borrow::Cow::Borrowed("关闭 / MSAA 2x / MSAA 4x / TAA")),
+        );
+        self.aa_btn.render(ui, rr, t);
+        ui.dy(ITEM_HEIGHT);
+
+        render_title(
+            ui,
+            std::borrow::Cow::Borrowed("帧率"),
+            Some(std::borrow::Cow::Borrowed("上限；低画质模式会强制 60")),
+        );
+        self.fps_btn.render(ui, rr, t);
+        ui.dy(ITEM_HEIGHT);
+
+        render_title(
+            ui,
+            std::borrow::Cow::Borrowed("低画质模式"),
+            Some(std::borrow::Cow::Borrowed("关特效/关粒子/60fps")),
+        );
+        render_switch(ui, rr, t, &mut self.lowq_btn, c.low_quality);
+        ui.dy(ITEM_HEIGHT);
+
+        // 弹层最后画，否则会被后面的项盖住
+        self.scale_btn.render_top(ui, t, 1.);
+        self.aa_btn.render_top(ui, t, 1.);
+        self.fps_btn.render_top(ui, t, 1.);
+        (r.w, ITEM_HEIGHT * 4.)
+    }
+}
+
+/// (sample_count, taa) → 下拉索引。0=关 1=2x 2=4x 3=TAA
+fn aa_index(sample_count: u32, taa: bool) -> usize {
+    if taa { 3 } else { match sample_count { 1 => 0, 2 => 1, _ => 2 } }
+}
+
+// ── 输入 ──
+simple_list!(InputList, { kb: kb_btn, dcp: dcp_btn, },
+|this, ui, r, t| {
+    let rr = right_rect(r.w);
+    render_title(ui, std::borrow::Cow::Borrowed("使用键盘游玩"), Some(std::borrow::Cow::Borrowed("桌面端键盘是正当玩法，成绩照常计入")));
+    render_switch(ui, rr, t, &mut this.kb_btn, get_data().config.use_keyboard);
+    ui.dy(ITEM_HEIGHT);
+    render_title(ui, std::borrow::Cow::Borrowed("双击暂停"), Some(std::borrow::Cow::Borrowed("双击屏幕暂停")));
+    render_switch(ui, rr, t, &mut this.dcp_btn, get_data().config.double_click_to_pause);
+    ui.dy(ITEM_HEIGHT);
+    (r.w, ITEM_HEIGHT * 2.)
+},
+|this, touch, t| {
+    let config = &mut get_data_mut().config;
+    if this.kb_btn.touch(touch, t) {
+        config.use_keyboard ^= true;
+        return Ok(Some(true));
+    }
+    if this.dcp_btn.touch(touch, t) {
+        config.double_click_to_pause ^= true;
+        return Ok(Some(true));
+    }
+    Ok(None)
+});
+
+// ── 声音 / 触觉 ──
+simple_list!(SoundHapticList, { music: music_btn, sfx: sfx_btn, },
+|this, ui, r, t| {
+    let rr = right_rect(r.w);
+    render_title(ui, std::borrow::Cow::Borrowed("音乐音量"), Some(std::borrow::Cow::Borrowed("点击切换 静音 / 正常")));
+    render_switch(ui, rr, t, &mut this.music_btn, get_data().config.volume_music > 0.);
+    ui.dy(ITEM_HEIGHT);
+    render_title(ui, std::borrow::Cow::Borrowed("音效音量"), Some(std::borrow::Cow::Borrowed("点击切换 静音 / 正常")));
+    render_switch(ui, rr, t, &mut this.sfx_btn, get_data().config.volume_sfx > 0.);
+    ui.dy(ITEM_HEIGHT);
+    (r.w, ITEM_HEIGHT * 2.)
+},
+|this, touch, t| {
+    let config = &mut get_data_mut().config;
+    if this.music_btn.touch(touch, t) {
+        config.volume_music = if config.volume_music > 0. { 0. } else { 1. };
+        return Ok(Some(true));
+    }
+    if this.sfx_btn.touch(touch, t) {
+        config.volume_sfx = if config.volume_sfx > 0. { 0. } else { 1. };
+        return Ok(Some(true));
+    }
+    Ok(None)
+});
+
+// ── 账号：四个法务/隐私网页入口 ──
+simple_list!(AccountList, {
+    privacy: privacy_btn,
+    child: child_btn,
+    personal: personal_btn,
+    third: third_btn,
+    telemetry: telemetry_btn,
+},
+|this, ui, r, t| {
+    let rr = right_rect(r.w);
+    /* 遥测开关放最上面 —— 这是**用户能主动行使的权利**，
+       比四份只读文档更应该被看到。文案要说清「关了会怎样」。 */
+    render_title(
+        ui,
+        std::borrow::Cow::Borrowed("上报游玩数据"),
+        Some(std::borrow::Cow::Borrowed("关闭后不再上传成绩/判定/设备/位置/陀螺仪")),
+    );
+    render_switch(ui, rr, t, &mut this.telemetry_btn, get_data().config.telemetry_enabled);
+    ui.dy(ITEM_HEIGHT);
+    for (title, sub, btn) in [
+        ("隐私政策", "隐私政策网页", &mut this.privacy_btn),
+        ("儿童隐私协议", "儿童个人信息保护规则", &mut this.child_btn),
+        ("个人信息收集清单", "我们收集哪些信息、用来做什么", &mut this.personal_btn),
+        ("第三方共享个人信息清单", "与哪些第三方共享", &mut this.third_btn),
+    ] {
+        render_title(ui, std::borrow::Cow::Borrowed(title), Some(std::borrow::Cow::Borrowed(sub)));
+        btn.render_text(ui, rr, t, "打开", 0.5, false);
+        ui.dy(ITEM_HEIGHT);
+    }
+    (r.w, ITEM_HEIGHT * 5.)
+},
+|this, touch, t| {
+    /* ⚠ 网页技术的人接内嵌 WebView 时，把下面四个 open_url(...) 换成
+       内嵌页打开即可；URL 常量在文件顶部 URL_* 一处定义。 */
+    if this.telemetry_btn.touch(touch, t) {
+        let cfg = &mut get_data_mut().config;
+        cfg.telemetry_enabled ^= true;
+        return Ok(Some(true));
+    }
+    if this.privacy_btn.touch(touch, t) {
+        let _ = open_url(URL_PRIVACY);
+        return Ok(Some(true));
+    }
+    if this.child_btn.touch(touch, t) {
+        let _ = open_url(URL_CHILD_PRIVACY);
+        return Ok(Some(true));
+    }
+    if this.personal_btn.touch(touch, t) {
+        let _ = open_url(URL_PERSONAL_INFO);
+        return Ok(Some(true));
+    }
+    if this.third_btn.touch(touch, t) {
+        let _ = open_url(URL_THIRD_PARTY);
+        return Ok(Some(true));
+    }
+    Ok(None)
+});
 
 struct GeneralList {
     icon_lang: SafeTexture,
@@ -1188,6 +1572,8 @@ impl ChartList {
 struct DebugList {
     chart_debug_btn: DRectButton,
     touch_debug_btn: DRectButton,
+    /// 【话梅】实时判定条开关（对局 HUD，调试分组）
+    timing_bar_btn: DRectButton,
 }
 
 impl DebugList {
@@ -1195,6 +1581,7 @@ impl DebugList {
         Self {
             chart_debug_btn: DRectButton::new(),
             touch_debug_btn: DRectButton::new(),
+            timing_bar_btn: DRectButton::new(),
         }
     }
 
@@ -1211,6 +1598,10 @@ impl DebugList {
         }
         if self.touch_debug_btn.touch(touch, t) {
             config.touch_debug ^= true;
+            return Ok(Some(true));
+        }
+        if self.timing_bar_btn.touch(touch, t) {
+            config.show_timing_bar ^= true;
             return Ok(Some(true));
         }
         Ok(None)
@@ -1241,6 +1632,14 @@ impl DebugList {
         item! {
             render_title(ui, tl!("item-touch-debug"), Some(tl!("item-touch-debug-sub")));
             render_switch(ui, rr, t, &mut self.touch_debug_btn, config.touch_debug);
+        }
+        item! {
+            render_title(
+                ui,
+                "实时判定条",
+                Some("对局中显示偏差轴 + 早晚倾向（不影响成绩）".into()),
+            );
+            render_switch(ui, rr, t, &mut self.timing_bar_btn, config.show_timing_bar);
         }
         (w, h)
     }
