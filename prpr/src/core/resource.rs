@@ -453,6 +453,8 @@ pub struct Resource {
     /// 放在 Resource 里而不是 GameScene：blit 时要和 `chart_target` 同时可变借用，
     /// 同结构体不同字段才合法。
     pub upscaler: Option<crate::upscale::Upscaler>,
+    /// 上采样 shader 创建失败过。置位后不再重试（避免每帧编译 shader）。
+    pub upscaler_failed: bool,
     pub no_effect: bool,
 
     pub note_buffer: RefCell<NoteBuffer>,
@@ -612,6 +614,7 @@ impl Resource {
 
             chart_target: None,
             upscaler: None,
+            upscaler_failed: false,
             no_effect,
 
             note_buffer: RefCell::new(NoteBuffer::default()),

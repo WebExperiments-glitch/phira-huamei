@@ -307,6 +307,8 @@ async fn the_main() -> Result<()> {
     let mut fps_times = VecDeque::<f32>::with_capacity(FPS_BUF_SIZE);
     let mut last_frame_start = f32::NAN;
     let mut fps_time_sum = 0.;
+    /// perf 心跳计数（每 10 次 = 约 10 秒记一行）
+    let mut perf_tick: u32 = 0;
 
     'app: loop {
         if main.paused() {
@@ -369,15 +371,28 @@ async fn the_main() -> Result<()> {
                 sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let q = |p: usize| sorted[p.min(sorted.len() - 1)] * 1000.;
                 let slow = |ms: f32| sorted.iter().filter(|&&x| x * 1000. >= ms).count();
-                crate::telem::note(format!(
-                    "perf: p50={:.1}ms p95={:.1}ms p99={:.1}ms max={:.1}ms slow(16/33/50/100)={}/{}/{}/{} frames={}",
-                    q(FPS_BUF_SIZE * 50 / 100),
-                    q(FPS_BUF_SIZE * 95 / 100),
-                    q(FPS_BUF_SIZE * 99 / 100),
-                    q(FPS_BUF_SIZE - 1),
-                    slow(16.67), slow(33.33), slow(50.), slow(100.),
-                    sorted.len(),
-                ));
+                /* ⚠ 不要每秒都写。
+                   原先这段每秒落一次盘 —— iOS 上每次 note() 都是一次文件写入，
+                   等于每秒一次 I/O：既费电，又会在 256 KB 轮转里把真正有用的
+                   崩溃/诊断信息冲掉（一天 8MB，轮转几十次）。
+
+                   现在只在两种情况下写：
+                     · 出现肉眼可见的卡顿（有 >33ms 的帧）→ 立刻记，这是要抓的东西
+                     · 否则每 10 秒记一次心跳 → 证明采样还活着
+                   正常游玩几乎不产生日志。 */
+                let janky = slow(33.33);
+                perf_tick += 1;
+                if janky > 0 || perf_tick % 10 == 0 {
+                    crate::telem::note(format!(
+                        "perf: p50={:.1}ms p95={:.1}ms p99={:.1}ms max={:.1}ms slow(16/33/50/100)={}/{}/{}/{} frames={}",
+                        q(FPS_BUF_SIZE * 50 / 100),
+                        q(FPS_BUF_SIZE * 95 / 100),
+                        q(FPS_BUF_SIZE * 99 / 100),
+                        q(FPS_BUF_SIZE - 1),
+                        slow(16.67), janky, slow(50.), slow(100.),
+                        sorted.len(),
+                    ));
+                }
             }
         }
 
@@ -691,7 +706,11 @@ pub fn apply_frame_rate(low_quality: bool) {
        再给 120 是自相矛盾的。 */
     #[cfg(target_os = "ios")]
     {
-        let limit = prpr::get_data().config.fps_limit;
+        /* ⚠ 必须是 crate 内的 get_data()。
+           踩过：写成 `prpr::get_data()` —— prpr 里没有这个函数，
+           但这段被 `#[cfg(target_os = "ios")]` 包着，**Windows 上不参与编译**，
+           所以本地一直绿，直到 iOS 构建才炸。 */
+        let limit = crate::get_data().config.fps_limit;
         let fps = if low_quality {
             60
         } else if matches!(limit, 60 | 90 | 120) {

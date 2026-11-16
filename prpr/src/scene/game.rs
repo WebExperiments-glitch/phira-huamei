@@ -1413,8 +1413,17 @@ impl Scene for GameScene {
                 let use_up = scale < 0.999;
                 if use_up {
                     let (iw, ih) = target.dim();
-                    if self.res.upscaler.is_none() {
-                        self.res.upscaler = crate::upscale::Upscaler::new((iw as f32, ih as f32)).ok();
+                    /* ⚠ 创建失败必须记住失败，否则每帧都会重试编译 shader ——
+                       那是一次完整的 GLSL 编译 + 链接，足够把帧率拖到个位数。
+                       某些 GLES 实现（老设备、驱动限制）确实会失败。 */
+                    if self.res.upscaler.is_none() && !self.res.upscaler_failed {
+                        match crate::upscale::Upscaler::new((iw as f32, ih as f32)) {
+                            Ok(it) => self.res.upscaler = Some(it),
+                            Err(err) => {
+                                tracing::warn!(?err, "上采样 shader 创建失败，回退双线性");
+                                self.res.upscaler_failed = true;
+                            }
+                        }
                     }
                     if let Some(up) = &mut self.res.upscaler {
                         up.set_input_size((iw as f32, ih as f32));
