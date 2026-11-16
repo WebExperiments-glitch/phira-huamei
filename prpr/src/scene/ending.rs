@@ -271,8 +271,8 @@ impl Scene for EndingScene {
         cam.render_target = self.target;
         let sr = ui.screen_rect();
         set_camera(&cam);
-        /* 用本场景相机自己的比例铺背景 —— screen_aspect() 可能拿到上一个场景的视口，
-           比例不对就会在屏幕下方留一条硬边。 */
+        /* 用本场景相机自己的比例铺背景：screen_aspect() 取的是 quad_gl 当前视口，
+           可能还是上一个场景留下的，比例不对会在屏幕下方留一条硬边。 */
         crate::scene::draw_background_asp(*self.background, asp);
 
         fn ran(t: f32, l: f32, r: f32) -> f32 {
@@ -293,67 +293,28 @@ impl Scene for EndingScene {
 
         let pf = ran(t, 2., 2.4);
 
-        /* ══════════════════════════════════════════════════════════════
-           【布局基准：panel】
-
-           以前每个元素都是硬编码坐标 + 一串沿斜线递推的 lf，结果：
-             · 内容一多就溢出卡片（卡片高度写死 0.34）
-             · 屏幕一窄就溢出屏幕（宽度没有一个统一的上界）
-
-           现在先算出 panel（斜切线右侧那块，含内边距），所有位置和宽度都从它推：
-               panel.left / panel.right / panel.width()
-           行距也由 panel 高度决定，竖屏不再上紧下空。
-           ══════════════════════════════════════════════════════════════ */
-        const SKEW: f32 = 0.4 / 1.9; // 斜边斜率：x 随 y 下降而右移
-        let diag_x = |y: f32| -0.48 + (1.2 - y) * SKEW;
-        let pad = 0.05;
-        /* 斜线最靠右（最靠内容）的位置在内容底部；用它算左边界才不会被压住 */
-        let content_bottom_guess = -top + 0.55;
-        let panel = Rect::new(
-            (diag_x(content_bottom_guess) + pad).min(0.2),
-            -top,
-            0.,
-            ui.top * 2.,
-        );
-        let panel = Rect::new(panel.x, panel.y, 1. - pad - panel.x, panel.h);
-        /* 行距随屏幕高度放大：竖屏内容少，行距太挤会显得上紧下空 */
-        /* 行距：先按可用高度反推，再夹在 [0.10, 0.20]。
-           之前用固定 0.15+top*0.055，横屏 16:9 直接算到屏幕外，
-           四行判定被挤到按钮下面（实拍过）。 */
-        let row_h = ((top * 0.9 - 0.42) / 4.).clamp(0.10, 0.20);
-
         if project_y < top {
             let c = ui.background();
-            let head_y = panel.y + 0.12;
-
-            /* ── 先把行几何全部算出来，再画卡片 ──
-               卡片底边 = 最后一行内容底部 + 内边距。以前写死 0.34，
-               内容一多（失分行、判定数、连击条）就全飘到模糊背景上。 */
-            let h0 = ui.text("0").size(1.5).measure_using(&PGR_FONT).h;
-            let score_y = head_y + 0.10;
-            let acc_y = score_y + h0 + 0.03;
-            let bar_y = acc_y + 0.13;
-            let loss_y = bar_y + 0.12;
-            let block_h = 3. * row_h + 0.10;
-            let content_top = loss_y + row_h * 0.85;
-            /* 竖屏空间多，把判定块放到剩余空间的中间；横屏贴上去 */
-            let extra = (top - 0.26 - content_top - block_h).max(0.);
-            let block_top = content_top + if ui.top > 1.0 { extra * 0.5 } else { 0. };
-            let card_bottom = (block_top + block_h + pad).min(top - 0.12);
-
+            let y = -top + 0.12;
+            let br = Rect::new(-1., y, 2., 0.34);
+            ui.fill_rect(br, (c, (-1., y), Color { a: 0.1, ..c }, (1., y + 0.3)));
+            /* 【2026-11-16】卡片补长。
+               上游这张卡只有 0.34 高 —— 因为上游卡里只装「标题 + 分数 + 准度」，
+               后面就结束了。我们后来塞进了**早晚偏差条**和**失分构成**两行，
+               内容掉出卡片，飘在模糊背景上。
+               这里把卡片往下接到判定块上沿（块的位置就是下面那个公式），
+               上面的渐变带不动 —— 保持上游的观感。 */
+            let card_bottom = (-top + 0.4 + ui.top * 0.3 - 0.05).max(br.bottom());
             ui.fill_rect(
-                Rect::new(-1., head_y, 2., card_bottom - head_y),
-                (c, (-1., head_y), Color { a: 0.10, ..c }, (1., head_y + 0.3)),
+                Rect::new(-1., br.bottom(), 2., card_bottom - br.bottom()),
+                Color { a: 0.18, ..c },
             );
-            /* 标题带压深一档，和内容区分开 */
-            ui.fill_rect(Rect::new(-1., head_y, 2., 0.30), Color { a: 0.30, ..c });
-            let br = Rect::new(-1., head_y, 2., 0.30);
 
             let r = ui
                 .text(tl!("detail"))
-                .pos(panel.right(), br.bottom() + 0.02)
+                .pos(1. - 0.02, br.bottom() + 0.02)
                 .anchor(1., 0.)
-                .size(0.44)
+                .size(0.5)
                 .color(if self.detail_mode { semi_white(0.4) } else { WHITE })
                 .draw_using(&BOLD_FONT);
             self.btn_detail.set(ui, r.feather(0.02));
@@ -364,26 +325,26 @@ impl Scene for EndingScene {
                但看不见「正在传」这件事本身，拦了也像卡住。 */
             if self.upload_task.is_some() {
                 ui.text(tl!("uploading"))
-                    .pos(panel.right(), br.bottom() - 0.04)
+                    .pos(1. - 0.02, br.bottom() - 0.06)
                     .anchor(1., 0.)
-                    .size(0.38)
+                    .size(0.4)
                     .color(semi_white(0.65))
                     .draw();
             }
 
             let res = &self.result;
 
-            let y = head_y + 0.24;
+            let y = y - 0.07;
             ui.fill_rect(Rect::new(-1., y, 2., 0.07), Color { a: 0.3, ..c });
             let r = ui
                 .text(&self.info.name)
-                .pos(panel.x, y + 0.012)
+                .pos(-0.53 + (1.2 - y) / 1.9 * 0.4, y + 0.012)
                 .color(semi_white(0.6))
-                .max_width((panel.w * 0.78).max(0.3))
+                .max_width(0.8)
                 .size(0.56)
                 .draw();
             ui.text(&self.info.level)
-                .pos(panel.right(), r.y)
+                .pos(0.97, r.y)
                 .anchor(1., 0.)
                 .size(0.56)
                 .color(semi_white(0.7))
@@ -391,12 +352,11 @@ impl Scene for EndingScene {
 
             let icon = &self.icons[icon_index(res.score, res.max_combo == res.num_of_notes)];
             let p = ran(t, 1.7, 2.4).powi(2);
-            /* 图标贴面板右缘，不再压到 FPS 那行（竖屏时 0.75 会盖住文字） */
-            let r = Rect::new(panel.right() - 0.02, br.center().y, 0., 0.).feather(0.13 + (1. - p) * 0.05);
+            let r = Rect::new(0.75, br.center().y, 0., 0.).feather(0.13 + (1. - p) * 0.05);
             ui.fill_rect(r, (**icon, r, ScaleType::Fit, semi_white(p)));
 
             let y = y + 0.16;
-            let lf = panel.x;
+            let lf = -0.48 + (1.2 - y) / 1.9 * 0.4;
             let mut x = lf;
             let p = ran(t, 0.9, 2.6);
             let mut digits = Vec::with_capacity(7);
@@ -452,7 +412,7 @@ impl Scene for EndingScene {
 
             let r = ui
                 .text(tl!("accuracy"))
-                .pos(panel.x, y + h + 0.03)
+                .pos(lf - 0.017, y + h + 0.03)
                 .color(cl)
                 .size(s)
                 .draw_using(&BOLD_FONT);
@@ -505,34 +465,27 @@ impl Scene for EndingScene {
                       断连失分 = 总分差 − 判定失分
                   这一行直接告诉你「练准度」还是「别断连」哪个更划算。
                ══════════════════════════════════════════════════════════ */
-            let ry = r.y + r.h + 0.06;
+            let ry = r.y + r.h + 0.05;
             let early: u32 = res.early_kind[0..3].iter().sum();
             let late: u32 = res.late_kind[0..3].iter().sum();
             let total_timed = early + late;
             if total_timed > 0 {
-                let s2 = 0.40;
-                /* 条居中于面板；两端留给「早 N」「N 晚」 */
-                let bar_w = (panel.w * 0.46).clamp(0.24, 0.60);
-                let bar = Rect::new(panel.x + (panel.w - bar_w) / 2., ry + 0.008, bar_w, 0.075);
-                /* ⚠ 标签取条的垂直中心（anchor y=0.5）：
-                   以前用 ry（文字左上角），「晚」被橙条盖掉半截、「早」贴着条顶。 */
-                let mid = bar.center().y;
-                ui.text(format!("早 {early}"))
-                    .pos(bar.left() - 0.03, mid)
-                    .anchor(1., 0.5)
-                    .no_baseline()
+                let s2 = 0.42;
+                let lr = ui
+                    .text("早")
+                    .pos(lf - 0.017, ry)
+                    .color(cl)
+                    .size(s2)
+                    .draw_using(&BOLD_FONT);
+                let lr = ui
+                    .text(format!("{early}"))
+                    .pos(lr.right() + 0.015, ry)
                     .color(Color::from_hex_rgb(0x81d4fa))
                     .size(s2)
                     .draw_using(&BOLD_FONT);
-                ui.text(format!("{late} 晚"))
-                    .pos(bar.right() + 0.03, mid)
-                    .anchor(0., 0.5)
-                    .no_baseline()
-                    .color(Color::from_hex_rgb(0xffab91))
-                    .size(s2)
-                    .draw_using(&BOLD_FONT);
-
-                /* 偏差条：以中心为 0，往左蓝色（早）、往右橙色（晚）。 */
+                /* 偏差条：以中心为 0，往左蓝色（早）、往右橙色（晚）。
+                   长度按比例分，两边加起来占满整条 —— 一眼看出偏向哪边。 */
+                let bar = Rect::new(lr.right() + 0.035, ry + 0.014, 0.42, 0.075);
                 ui.fill_rect(bar, Color { a: 0.28, ..WHITE });
                 let cx = bar.x + bar.w / 2.;
                 let p = early as f32 / total_timed as f32;
@@ -549,7 +502,14 @@ impl Scene for EndingScene {
                     );
                 }
                 /* 中线压在最上面，标出"零点"在哪 */
-                ui.fill_rect(Rect::new(cx - 0.002, bar.y - 0.010, 0.004, bar.h + 0.020), semi_white(0.85));
+                ui.fill_rect(Rect::new(cx - 0.002, bar.y - 0.012, 0.004, bar.h + 0.024), semi_white(0.85));
+                let rr2 = ui
+                    .text(format!("{late}"))
+                    .pos(bar.right() + 0.02, ry)
+                    .color(Color::from_hex_rgb(0xffab91))
+                    .size(s2)
+                    .draw_using(&BOLD_FONT);
+                ui.text("晚").pos(rr2.right() + 0.015, ry).color(cl).size(s2).draw_using(&BOLD_FONT);
             }
 
             let ry2 = ry + 0.11;
@@ -558,7 +518,7 @@ impl Scene for EndingScene {
             let loss_combo = loss.saturating_sub(loss_judge);
             let lr = ui
                 .text(tl!("lost"))
-                .pos(panel.x, ry2)
+                .pos(lf - 0.017, ry2)
                 .color(cl)
                 .size(s)
                 .draw_using(&BOLD_FONT);
@@ -594,12 +554,10 @@ impl Scene for EndingScene {
                 .size(s)
                 .draw_using(&BOLD_FONT);
 
-            /* ── 判定统计：从 panel 推起点，两列各自对齐 ──
-               以前 y 是 `-top + 0.4 + ui.top*0.3` 这种魔法数，竖屏就上紧下空；
-               x 又是沿线递推，四行的左缘参差不齐。 */
-            let mut y = block_top;
+            let mut y = -top + 0.4 + ui.top * 0.3;
             let tp = y;
-            let x = panel.x + panel.w * 0.40;
+            let mut x = -0.26 + (1.2 - y) / 1.9 * 0.4;
+            let lf = x;
             let s = 0.64;
             for (id, title) in ["PERFECT", "GOOD", "BAD", "MISS"].into_iter().enumerate() {
                 ui.text(title)
@@ -625,13 +583,13 @@ impl Scene for EndingScene {
                 };
                 let dy = r.h + 0.03;
                 y += dy;
-                /* 列不再沿斜线漂移：四行左缘必须对齐（锯齿的来源） */
+                x -= dy / 1.9 * 0.4;
             }
 
             let p = ran(t, 0.8, 1.8);
             let p = 1. - (1. - p).powi(3);
             let mut y = tp;
-            let mut x = panel.x + panel.w * 0.62;
+            let mut x = lf + 0.42;
             let r = ui
                 .text(tl!("max-combo"))
                 .pos(x, y)

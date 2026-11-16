@@ -452,9 +452,21 @@ pub fn define_app_delegate() -> *const Class {
                 screen_scale *= 2.;
             }
 
+            /* ── 渲染分辨率上限：3x 设备按 2x 渲染（2026-11-16 省电）──
+             *
+             * iPad Pro 是 3x（2048×2732 ≈ 560 万像素），每帧都要全屏着色。
+             * 音游的画面全是粒子/特效/大纹理，像素数和耗电基本线性。
+             * 降到 2x 少画 56% 像素，肉眼几乎无差（文字略软）。
+             *
+             * ⚠ 必须同时改到三处才自洽：framebuffer 尺寸、display.scale
+             *   （触摸换算 / 安全区都乘它）、contentScaleFactor。
+             *   只改 contentScaleFactor 会让触摸坐标和画面错位。 */
+            const MAX_RENDER_SCALE: f64 = 2.0;
+            let render_scale = screen_scale.min(MAX_RENDER_SCALE);
+
             let (screen_width, screen_height) = (
-                (screen_rect.size.width * screen_scale) as i32,
-                (screen_rect.size.height * screen_scale) as i32,
+                (screen_rect.size.width * render_scale) as i32,
+                (screen_rect.size.height * render_scale) as i32,
             );
 
             let window_obj: ObjcId = msg_send![class!(UIWindow), alloc];
@@ -476,7 +488,7 @@ pub fn define_app_delegate() -> *const Class {
                         high_dpi: conf.high_dpi,
                         ..Default::default()
                     },
-                    scale: screen_scale,
+                    scale: render_scale,
                 },
                 f: Some(Box::new(f)),
                 event_handler: None,
@@ -513,7 +525,7 @@ pub fn define_app_delegate() -> *const Class {
             let _: () = msg_send![glk_view_obj, setEnableSetNeedsDisplay: NO];
             let _: () = msg_send![glk_view_obj, setUserInteractionEnabled: YES];
             let _: () = msg_send![glk_view_obj, setMultipleTouchEnabled: YES];
-            let _: () = msg_send![glk_view_obj, setContentScaleFactor: screen_scale];
+            let _: () = msg_send![glk_view_obj, setContentScaleFactor: render_scale];
             let _: () = msg_send![window_obj, addSubview: glk_view_obj];
 
             // let view_ctrl_obj: ObjcId = msg_send![class!(GLKViewController), alloc];
@@ -521,7 +533,14 @@ pub fn define_app_delegate() -> *const Class {
             let view_ctrl_obj: ObjcId = msg_send![view_ctrl_obj, init];
 
             let _: () = msg_send![view_ctrl_obj, setView: glk_view_obj];
-            let _: () = msg_send![view_ctrl_obj, setPreferredFramesPerSecond: 120];
+            /* ── 渲染帧率 120 → 60（2026-11-16 省电）──
+             *
+             * 这里原来写死 120：ProMotion 屏上 CADisplayLink 每 8.3ms 触发一次，
+             * 而游戏逻辑是 60Hz（桌面端日志 "FPS 421 (capped at 60)" 就是证据），
+             * 等于**白烧一倍 GPU**，对续航是最大的单项开销。
+             *
+             * 60 与逻辑帧率对齐，画面不再有「渲染了但状态没变」的重复帧。 */
+            let _: () = msg_send![view_ctrl_obj, setPreferredFramesPerSecond: 60];
             let _: () = msg_send![window_obj, setRootViewController: view_ctrl_obj];
             let _: () = msg_send![
                 view_ctrl_obj,
