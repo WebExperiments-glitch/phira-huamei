@@ -51,3 +51,8 @@ inner.rs
 # OHOS
 
 /phira/dist/
+
+# 【话梅 2026-11-16】项目数据（.workbuddy 每轮都在变）与运行日志，不进版本库
+.workbuddy/
+phira_run.log
+*.log

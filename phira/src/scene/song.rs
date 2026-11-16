@@ -1091,8 +1091,14 @@ impl SongScene {
                 /* 2026-11-15：不再要求登录。未登录也会匿名上报（服务端 owner_id = null），
                    所以发送器无条件建。原来这里没登录就返回 None，EndingScene 里
                    `upload_fn.and_then(record_data)` 直接拿不到东西 —— 结算页连上传
-                   都不发起，右上角的「上传中」也就永远不会出现。 */
-                Some(Arc::new(move |data: Vec<u8>| {
+                   都不发起，右上角的「上传中」也就永远不会出现。
+
+                   【2026-11-16 合规】加用户开关。采集内容包含**位置（敏感个人信息）
+                   与陀螺仪**，按《个人信息保护法》必须提供便捷的拒绝方式。
+                   关闭后连 UploadFn 都不构造 —— 结算页也就不会显示「上传中」，
+                   这个「无副作用」是刻意的：让用户能看出开关真的生效了。 */
+                let telemetry_on = get_data().config.telemetry_enabled;
+                if telemetry_on { Some(Arc::new(move |data: Vec<u8>| {
                     let digest = huamei_digest.clone();
                     Task::new(async move {
                         let resp = crate::huamei::upload_play(&data, digest).await?;
@@ -1113,7 +1119,7 @@ impl SongScene {
                             chart_plays: resp.chart_plays,
                         })
                     })
-                }))
+                })) } else { None }
             };
             // ══════════════════════════════════════════════════════════
 
