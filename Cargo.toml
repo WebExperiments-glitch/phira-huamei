@@ -73,7 +73,16 @@ walkdir = "2.5.0"
 zip = { version = "8.3.0", default-features = false }
 
 [profile.release]
-opt-level = 2
+# 【话梅 2026-11-16 性能】opt-level 2 -> 3：游戏是每帧 16.7ms 的硬实时场景，
+# 值得为内联和向量化多花一点编译时间。
+opt-level = 3
+# 跨 crate 内联。prpr / miniquad / macroquad 之间的调用很密，
+# 没有 LTO 时这些调用只能走函数边界。
+# 用 thin 而不是 fat：fat 的编译时间在这个体量上会翻倍，收益只多几个百分点。
+lto = "thin"
+# 单 codegen unit：让 LLVM 看到整个 crate 再优化。
+# 代价是并行编译度降到 1，release 构建会明显变慢（CI 上可感知）。
+codegen-units = 1
 # 保留符号表：iOS 的 .ips 崩溃报告靠**App 二进制自身的符号**来显示函数名，
 # 不靠 dSYM（侧载 IPA 没有 dSYM 一起装）。strip = true 时帧只剩地址，
 # 2026-11-06 那次 SIGABRT 就是这样，完全定位不到行。
