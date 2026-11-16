@@ -390,10 +390,19 @@ impl JudgeLine {
                 res.screen_to_world(Point::new(vw, -vh)),
                 res.screen_to_world(Point::new(vw, vh)),
             ];
-            /* world y → 谱面 y：乘的是**谱面**比例（见 resource.rs 的说明）。
-               这个值直接决定「往上有多少音符要渲染」，竖屏看更远就靠它。 */
-            let height_above = p[0].y.max(p[1].y.max(p[2].y.max(p[3].y))) * res.chart_aspect;
-            let height_below = -p[0].y.min(p[1].y.min(p[2].y.min(p[3].y))) * res.chart_aspect;
+            /* ── NDC → 谱面单位：必须乘 chart_aspect / aspect_ratio ──
+             *
+             * `screen_to_world` 这里拿到的是 NDC（±1 就是屏幕边缘），不是世界坐标；
+             * 世界坐标 = NDC / aspect_ratio（相机缩放），谱面 = 世界 × chart_aspect。
+             * 两个比例相除才是完整换算。
+             *
+             * ⚠ 2026-11-16 实测：漏除 aspect_ratio 时，横屏（两者相等，系数 1）
+             *   完全看不出来；竖屏算出 1.0，而屏幕实际能看到 1.6 ——
+             *   音符要降到 62% 高度才被渲染，上方永远空一截。
+             *   这个值直接决定「往上有多少音符要渲染」，也就是竖屏能看多远。 */
+            let y_factor = res.chart_aspect / res.aspect_ratio;
+            let height_above = p[0].y.max(p[1].y.max(p[2].y.max(p[3].y))) * y_factor;
+            let height_below = -p[0].y.min(p[1].y.min(p[2].y.min(p[3].y))) * y_factor;
             let agg = res.config.aggressive;
             for note in self.notes.iter().take(self.cache.not_plain_count).filter(|it| it.above) {
                 note.render(res, &mut config, bpm_list);
