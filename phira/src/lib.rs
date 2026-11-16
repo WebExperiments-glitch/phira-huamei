@@ -44,6 +44,8 @@ fn backfill_difficulty(chart_id: i32, difficulty: f32) {
 
 /// 【话梅】谱面定数客户端（PHM 开放平台）
 mod difficulty;
+/// 【话梅】线程 QoS 分级（大小核调度）
+mod qos;
 mod icons;
 mod images;
 mod login;
@@ -269,11 +271,21 @@ async fn the_main() -> Result<()> {
         prpr::core::DPI_VALUE.store(250, std::sync::atomic::Ordering::Relaxed);
     };
 
+    /* 【话梅 大小核】主线程 = 渲染 + 输入 + 音频回调，必须 P 核。 */
+    crate::qos::interactive();
+
     ensure_embedded_assets();
     init_assets();
 
+    /* 【话梅 大小核】tokio worker 一律降到 UTILITY。
+       它们是网络请求、谱面解析、写盘这类「可以慢一点」的活 ——
+       默认 QoS 会和渲染线程抢 P 核，那才是真正的掉帧来源。
+
+       ⚠ 注意 `on_thread_start` 只对**新建**线程生效，
+       所以必须在 build 之前挂上。 */
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
+        .on_thread_start(|| crate::qos::utility())
         .enable_all()
         .build()
         .unwrap();
