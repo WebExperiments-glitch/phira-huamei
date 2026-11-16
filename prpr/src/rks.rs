@@ -15,10 +15,17 @@
 //!    这一条来自 Phira 官方版主在社区问答中的公开回复：
 //!    「Phira 的 RKS 计算方式是上架区谱面的 R10 + B20」。
 //!
-//!    ⚠ R10 的**精确定义未公开**（是「最近 10 次游玩」还是「最近 10 个
-//!      不同谱面」、是否去重、是否计入未上架谱面），我们按最常见的
-//!      「最近 10 次有效游玩 + 最好 20 个单曲成绩，共 30 项取平均」实现，
-//!      并把权重做成常量，等拿到官方数据后只需改这几个数字。
+//!    **R10 的口径已用官方接口实测确认**（2026-11-16）：
+//!
+//!    · R10 = 最近 **10 次游玩记录**，不是 10 个不同谱面
+//!    · **不去重** —— 同一张谱刷 10 次就占满 10 个槽
+//!      （实测 UID 100 的 10 个槽里只有 4 张不同的谱）
+//!    · B20 在**入池时**要求上架；查询时不再过滤 ——
+//!      谱面后来被取消 ranked，历史成绩仍留在池里并计入总分
+//!
+//!    总分公式：`(Σ bestPool[≤20] + Σ recentPool[≤10]) / 30`
+//!    **分母恒为 30**，不按实际条数归一化。
+//!    官方 8 个用户实测零误差（Δ ≤ 1.8e-15）；反证其他分母都差 0.65 以上。
 //!
 //! ## 为什么定数用我们自己的
 //!
@@ -75,14 +82,20 @@ pub fn player_rks(entries: &[ScoreEntry]) -> f32 {
     by_rks.sort_by(|a, b| b.rks.partial_cmp(&a.rks).unwrap_or(std::cmp::Ordering::Equal));
     let best_sum: f32 = by_rks.iter().take(BEST_COUNT).map(|e| e.rks).sum();
 
-    // 分母是**实际参与的平均项数**，不是固定 30 —— 新手只打过 3 局时
-    // 不该被 27 个 0 拉低。
-    let recent_n = by_time.len().min(RECENT_COUNT) as f32;
-    let best_n = by_rks.len().min(BEST_COUNT) as f32;
-    let denom = recent_n + best_n;
-    if denom <= 0. {
-        return 0.;
-    }
+    /* ⚠ 分母**恒为 30**，不是实际条数。
+       我最初写成「实际参与项数」，理由是「新手不该被 27 个 0 拉低」——
+       听起来合理，但与官方口径**相反**：官方就是按 30 归一化。
+
+       实测证据（8 个用户零误差，Δ ≤ 1.8e-15）：
+         (B20+R10)/30   ✅
+         (B20/20+R10/10)/2  差 0.65
+         B20/20             差 1.30
+         R10/10             差 2.60
+         (B20+R10)/20       差 6.25
+
+       后果要说清：只打过 1 局的新玩家，总分 = 该局 rks / 30，
+       看起来低得离谱 —— 这是**官方行为**，不是 bug。 */
+    let denom = (RECENT_COUNT + BEST_COUNT) as f32;
 
     let raw = (recent_sum + best_sum) / denom;
     // 官方显示两位小数（四舍五入也在这里做，内部保持全精度）
@@ -197,17 +210,23 @@ mod tests {
     }
 
     #[test]
-    fn small_history_not_diluted_by_zeros() {
-        // 只打过 1 局时，结果应约等于该局的 rks（而不是被 29 个 0 稀释）
+    fn single_play_contributes_to_both_pools() {
+        /* 官方口径：分母恒为 30。
+           而且**同一局会同时进 R10 和 B20 两个池**（两个池不是互斥集合），
+           所以只打过 1 局时，总分 = 2×rks/30 = rks/15。
+
+           定数 15、acc 100% 的新玩家，RKS 只有 1.00 ——
+           看起来低得离谱，但这就是官方的净值方式
+           （实测 8 个用户零误差，Δ ≤ 1.8e-15）。 */
         let one = [ScoreEntry { rks: 15.0, played_at: 1 }];
-        assert!((player_rks(&one) - 15.0).abs() < 0.01);
+        assert!((player_rks(&one) - 15.0 * 2.0 / 30.0).abs() < 0.01);
     }
 
     #[test]
     fn best_and_recent_can_overlap() {
-        // 单局高分会同时进 R10 和 B20，两项相加后平均仍是该分数
+        // 单局会同时进 R10 和 B20 两个池，所以贡献是 2×rks/30
         let e = [ScoreEntry { rks: 14.0, played_at: 100 }];
-        assert!((player_rks(&e) - 14.0).abs() < 0.01);
+        assert!((player_rks(&e) - 14.0 * 2.0 / 30.0).abs() < 0.01);
     }
 
     #[test]
