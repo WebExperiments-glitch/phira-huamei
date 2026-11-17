@@ -1535,9 +1535,22 @@ impl Scene for GameScene {
         let leaving = self.should_exit
             || matches!(&self.next_scene, Some(n) if !matches!(n, NextScene::None));
         if leaving {
+            /* 双保险：pause 让播放头停住；set_amplifier(0) 立刻静音。
+               为什么两个都要：
+               · pause 走的是 sasa 的命令队列，命令到达音频线程前
+                 仍有缓冲在响；拉到 0 是立即的
+               · 反过来只有静音不 pause，曲子会在后台继续走位置，
+                 下次进来就对不上（用户实测：等到曲子放完再进就不同步）
+
+               恢复在 GameScene 重新进入时做（见 enter/update 里的
+               set_amplifier(volume_music)），所以这里置 0 是安全的。 */
             if let Err(err) = self.music.pause() {
                 tracing::warn!("next_scene: 暂停音乐失败 {err}");
             }
+            if let Err(err) = self.music.set_amplifier(0.) {
+                tracing::warn!("next_scene: 静音失败 {err}");
+            }
+            tracing::info!("game: 离开对局，已暂停并静音音乐");
         }
 
         if self.should_exit {
