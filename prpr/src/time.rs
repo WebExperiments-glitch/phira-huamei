@@ -75,6 +75,12 @@ static PAUSE_TOTAL_MS: AtomicU64 = AtomicU64::new(0);
 
 /// 系统进入后台/锁屏。**在 UI 线程同步调用**，可重入（重复调用无副作用）。
 pub fn system_pause() {
+    /* 【话梅 2026-11-17】切后台时连带清空触摸状态。
+       理由：手指离开屏幕时 Ended 事件会因为进程挂起而丢失，
+       残留的触点会被 UI 当成「一直按着」（短按触发长按、
+       多个谱面同时响应）。详见 judge::request_touch_reset 的注释。 */
+    crate::judge::request_touch_reset();
+
     // compare_exchange 保证只有第一次生效，嵌套调用不会覆盖起点
     let _ = PAUSE_BEGIN_MS.compare_exchange(
         u64::MAX,

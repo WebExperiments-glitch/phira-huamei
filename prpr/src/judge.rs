@@ -367,6 +367,26 @@ struct TouchStatus {
 }
 
 static SUBSCRIBER_ID: Lazy<usize> = Lazy::new(register_input_subscriber);
+
+/// 【话梅 2026-11-17】请求清空触摸状态。
+///
+/// 根因：`on_new_frame` 每帧从 miniquad 重放输入事件来重建 TOUCHES，
+/// 而 `Handler::finalize` **只补鼠标**，从不清理「Started 了但没等到 Ended」
+/// 的触摸。切后台 / 暂停 / 场景切换时 Ended 事件会丢，那个触点就永远留下：
+///
+///   · 位置固定不动 → UI 的 update_long_touch 认为「手指一直按着」
+///     → 长按计时器走到底 → **短按却弹出长按菜单**
+///   · 反复几次累积多个残留 → 一帧内多个触点同时命中不同谱面
+///     → **三个谱子一起响应**（用户实测）
+///
+/// 物理事实：切后台时手指必然离开屏幕（或系统已取消触摸），
+/// 所以恢复后把状态归零是安全且正确的。
+static TOUCH_RESET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 由 UI 线程（切后台回调）调用，下一帧生效。
+pub fn request_touch_reset() {
+    TOUCH_RESET.store(true, std::sync::atomic::Ordering::Release);
+}
 thread_local! {
     static TOUCHES: RefCell<TouchStatus> = RefCell::default();
     static WHEEL: RefCell<(f32, f32)> = RefCell::default();
@@ -464,6 +484,14 @@ impl Judge {
     }
 
     pub(crate) fn on_new_frame() {
+        /* 【话梅】切后台恢复后的第一帧：把触摸状态归零，
+           并**跳过本帧的事件重放** —— 队列里可能还压着切走前的
+           Started 事件，重放会把幽灵触点又装回去。 */
+        if TOUCH_RESET.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            TOUCHES.with(|it| *it.borrow_mut() = TouchStatus::default());
+            WHEEL.with(|it| *it.borrow_mut() = (0., 0.));
+            return;
+        }
         let mut handler = Handler {
             status: TouchStatus::default(),
             wheel: (0., 0.),

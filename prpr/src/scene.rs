@@ -512,7 +512,16 @@ impl Main {
         if self.paused {
             return Ok(());
         }
-        match self.scenes.last_mut().unwrap().next_scene(&mut self.tm) {
+        let next = self.scenes.last_mut().unwrap().next_scene(&mut self.tm);
+        /* 【话梅 2026-11-17】任何场景切换都清空触摸状态。
+           场景切换往往发生在「点了一个按钮」之后，手指刚抬起；
+           如果那一刻的 Ended 被吞掉（UI 层拦截、焦点切换、进程挂起），
+           触点就会残留，回来后在谱面库表现为「短按触发长按菜单」
+           「同时命中好几个谱面」。见 judge::request_touch_reset。 */
+        if !matches!(next, NextScene::None) {
+            crate::judge::request_touch_reset();
+        }
+        match next {
             NextScene::None => {}
             NextScene::Pop => {
                 self.scenes.pop();
