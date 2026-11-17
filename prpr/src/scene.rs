@@ -645,6 +645,14 @@ impl Main {
            拿不到 phira 管的 config。phira 在启动与改设置时写入
            taa::set_global_enabled(config.taa)。 */
         let dim = (screen_width() as u32, screen_height() as u32);
+
+        /* 【话梅 2026-11-17】静止检测：没有触摸就认为画面趋于静止。
+           静止后 jitter 会在约 15 帧内线性降到 0，文字随之停止抖动并锁定清晰。
+           滚动惯性期没有触摸 → 会被当成静止，这是可接受的：
+           滚动时 TAA 本来就容易拖影，jitter=0 至少不会让文字发糊。 */
+        let touching = self.touches.as_ref().is_some_and(|it| !it.is_empty());
+        self.taa.set_idle(!touching);
+
         let want_taa = crate::taa::global_enabled()
             && dim.0 > 0
             && dim.1 > 0

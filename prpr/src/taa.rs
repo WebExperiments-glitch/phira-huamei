@@ -42,6 +42,19 @@ pub struct Taa {
     history_dim: (u32, u32),
     /// 上一帧的滚动偏移（世界单位），用于算运动矢量
     last_scroll: f32,
+    /// 【话梅 2026-11-17】连续静止帧数。
+    ///
+    /// 为什么需要它：TAA 的 jitter 会让**文字**每帧偏移半像素，
+    /// 累积混合后文字变成重影（用户实测「文字抖」）。
+    /// 业界共识是 UI 文字不该参与 jitter ——
+    ///   "Do not casually run it across UI text; composite UI after the filter"
+    /// 但我们的 UI 和图形在同一 pass 里，无法分离。
+    ///
+    /// 折中方案：画面静止时把 jitter 收敛到 0。
+    /// · 静止 → 不再引入新偏移，历史与当前完全重合 → 文字**清晰稳定**
+    /// · 有交互/动画 → 恢复 jitter，继续靠多帧累积抗锯齿
+    /// 这样文字锐利和边缘平滑两头都能拿到。
+    idle_frames: u32,
 }
 
 impl Default for Taa {
@@ -51,6 +64,7 @@ impl Default for Taa {
             history: None,
             history_dim: (0, 0),
             last_scroll: 0.,
+            idle_frames: 0,
         }
     }
 }
@@ -69,24 +83,59 @@ impl Taa {
         if dim.0 == 0 || dim.1 == 0 {
             return Vec2::ZERO;
         }
+        /* 静止收敛：约 0.25 秒后（60fps ≈ 15 帧）jitter 线性降到 0。
+           降到 0 之后当前帧与历史完全重合，混合不再产生任何偏移 ——
+           文字停止抖动并锁定到最清晰的状态。
+           用线性而非阶跃，避免"突然不抖"造成的视觉跳变。 */
+        let scale = (1. - self.idle_frames as f32 / 15.).clamp(0., 1.);
+        if scale <= 0. {
+            return Vec2::ZERO;
+        }
         let (hx, hy) = HALTON[(self.frame as usize) % HALTON.len()];
         // 世界坐标里 [-1,1] 对应整屏，所以 1 像素 = 2/dim
         vec2(
-            (hx - 0.5) * 2. / dim.0 as f32,
-            (hy - 0.5) * 2. / dim.1 as f32,
+            (hx - 0.5) * 2. / dim.0 as f32 * scale,
+            (hy - 0.5) * 2. / dim.1 as f32 * scale,
         )
+    }
+
+    /// 每帧告知「画面是否静止」（无触摸、无滚动、无动画）。
+    pub fn set_idle(&mut self, idle: bool) {
+        if idle {
+            self.idle_frames = self.idle_frames.saturating_add(1);
+        } else {
+            self.idle_frames = 0;
+        }
+    }
+
+    #[inline]
+    pub fn is_converged(&self) -> bool {
+        self.idle_frames >= 15
     }
 
     pub fn advance(&mut self) {
         self.frame = self.frame.wrapping_add(1);
     }
 
-    /// ④ 本帧历史权重。
+    /// ④ 本帧**当前帧**的权重（命名沿用上游，容易误解，特此说明）。
     ///
-    /// 静止时用 0.82（历史占大头 → 累积出抗锯齿）；
-    /// 滚动越快，历史越不可信（③ 的近似），权重线性降到 0.35。
+    /// ⚠ 语义提醒：调用方是
+    ///     画当前帧（不透明） → 再画历史，alpha = 1 - 本函数返回值
+    ///   所以返回值越大 = **越信任当前帧** = 画面越清晰、
+    ///   越小 = 越依赖历史 = 越平滑但越糊/越容易拖影。
+    ///
+    /// · 已收敛（静止够久）：0.94 —— 当前帧主导，文字锁定清晰
+    /// · 静止但刚停下：0.82
+    /// · 快速滚动：0.35 —— 多取历史压闪烁（此时文字本来就看不细）
+    ///
     /// `scroll_speed` 单位是「世界单位/秒」，谱面常见 1~10。
     pub fn history_weight(&self, scroll_speed: f32) -> f32 {
+        /* 已收敛（静止足够久）时把历史权重拉到 0.94：
+           此时 jitter 已经是 0，历史与当前几乎相同，高权重只是
+           进一步压掉残余噪声，让画面彻底"锁死"不闪。 */
+        if self.is_converged() {
+            return 0.94;
+        }
         let s = scroll_speed.abs().clamp(0., 8.);
         // 0 → 0.82，8 → 0.35
         (0.82 - s / 8. * 0.47).clamp(0.35, 0.82)
