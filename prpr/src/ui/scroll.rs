@@ -386,6 +386,24 @@ impl Scroll {
         };
         self.x_scroller.size((s.0 - self.size.0).max(0.));
         self.y_scroller.size((s.1 - self.size.1).max(0.));
+
+        /* 【临时诊断】排查「滑动时文字消失、过一会又回来」。
+           记录：内容尺寸 s、视口尺寸、滚动偏移、以及 Ui 当时的裁剪区。
+           如果消失时 s 变 0 或 offset 被 clamp 到 0，问题在布局；
+           如果 s/offset 正常但 clip 异常，问题在 scissor。 */
+        {
+            static TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let moving = self.x_scroller.offset != 0. || self.y_scroller.offset != 0.;
+            if moving && n % 12 == 0 {
+                crate::huamei::diag(format!(
+                    "scroll-diag: content=({:.3},{:.3}) view=({:.3},{:.3}) offset=({:.3},{:.3}) clip={:?}",
+                    s.0, s.1, self.size.0, self.size.1,
+                    self.x_scroller.offset, self.y_scroller.offset,
+                    ui.scissor
+                ));
+            }
+        }
     }
 
     pub fn matrix(&self) -> Option<Matrix> {

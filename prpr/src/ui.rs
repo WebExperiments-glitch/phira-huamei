@@ -919,8 +919,31 @@ impl<'a> Ui<'a> {
             Some((l, t, r - l, b - t))
         };
 
+        /* 【话梅 2026-11-17】切裁剪区**前后必须 flush**。
+           已经在 draw_mode 里累积的顶点，若在 scissor 改变之后才提交，
+           会被按**新的**裁剪区绘制 —— 表现为内容突然消失一片。
+           桌面 GL 因为批处理时机不同可能侥幸不触发，GLES（iPad）上会。
+           代价：每次进出裁剪区多一次 flush；UI 批次数本来就不多，可接受。 */
+        /* ⚠ 只在**最外层** flush。
+           一开始无条件 flush，FPS 从 367 掉到 39 —— UI 里 scissor 被
+           频繁调用（每个滚动区、每个圆角裁剪），每次都 flush 会彻底
+           打断顶点批处理，等于把每次绘制拆成独立 draw call。
+
+           而真正需要 flush 的只有「进入/退出裁剪区」这两个边界：
+           内层 scissor 是嵌套在已经 flush 过的批次之后，不会混。
+           判断方式：self.scissor 为 None 说明当前不在任何裁剪区内，
+           这次就是最外层。 */
+        let outermost = self.scissor.is_none();
+        if outermost {
+            unsafe { get_internal_gl() }.flush();
+        }
         gl.scissor(self.scissor);
+
         let res = f(self);
+
+        if outermost {
+            unsafe { get_internal_gl() }.flush();
+        }
         self.scissor = old;
         gl.scissor(old);
         res
