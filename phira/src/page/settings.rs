@@ -423,6 +423,39 @@ fn render_title<'a>(ui: &mut Ui, title: impl Into<Cow<'a, str>>, subtitle: Optio
 }
 
 #[inline]
+/// 扫描资源包目录下的图片，返回**相对路径**列表（用 `/` 分隔）。
+///
+/// 深度限制 3 层：资源包结构一般是 `manifest.json + home/xxx.png` 这种浅层，
+/// 无限递归会在玩家放了大数据集时卡住主线程。
+fn list_respack_images() -> Vec<String> {
+    fn walk(base: &std::path::Path, cur: &std::path::Path, out: &mut Vec<String>, depth: u32) {
+        if depth == 0 {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(cur) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(base, &p, out, depth - 1);
+                continue;
+            }
+            let ext = p.extension().and_then(|x| x.to_str()).unwrap_or_default().to_ascii_lowercase();
+            if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+                if let Ok(rel) = p.strip_prefix(base) {
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(base) = crate::dir::respacks() {
+        let base = std::path::PathBuf::from(base);
+        walk(&base, &base, &mut out, 3);
+    }
+    out.sort();
+    out
+}
+
 fn render_switch(ui: &mut Ui, r: Rect, t: f32, btn: &mut DRectButton, on: bool) {
     btn.render_text(ui, r, t, if on { ttl!("switch-on") } else { ttl!("switch-off") }, 0.5, on);
 }
@@ -483,6 +516,8 @@ struct GraphicsList {
     aa_btn: ChooseButton,
     fps_btn: ChooseButton,
     lowq_btn: DRectButton,
+    /// 【话梅】主页装扮：点一下切到下一张资源包图片
+    home_bg_btn: DRectButton,
 }
 
 /// 渲染精度档位（百分比）。和绝区零的「渲染精度」同一个概念：
@@ -527,6 +562,7 @@ impl GraphicsList {
                 .with_options(FPS_OPTIONS.iter().map(|(n, _)| n.to_string()).collect())
                 .with_selected(fps_index(c.fps_limit)),
             lowq_btn: DRectButton::new(),
+            home_bg_btn: DRectButton::new(),
         }
     }
 
@@ -618,6 +654,20 @@ impl GraphicsList {
            让用户重新点一下即可，不值得为此引入这个竞态。 */
 
         let rr = right_rect(r.w);
+        /* 【话梅】主页装扮 —— 素材来自资源包，所以副标题直接引导装机 */
+        let bg_label = c
+            .home_bg
+            .as_deref()
+            .map(|p| p.rsplit('/').next().unwrap_or(p).to_owned())
+            .unwrap_or_else(|| "默认".to_owned());
+        render_title(
+            ui,
+            std::borrow::Cow::Borrowed("主页装扮"),
+            Some(std::borrow::Cow::Borrowed("装资源包后可换主页背景；点击切换")),
+        );
+        self.home_bg_btn.render_text(ui, rr, t, &bg_label, 0.42, c.home_bg.is_some());
+        ui.dy(ITEM_HEIGHT);
+
         render_title(
             ui,
             std::borrow::Cow::Borrowed("渲染精度"),
