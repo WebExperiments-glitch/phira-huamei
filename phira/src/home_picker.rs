@@ -153,8 +153,15 @@ mod picker_ios {
 
                 // 安全作用域：不 start 就读不到文件
                 let accessing = unsafe { url.startAccessingSecurityScopedResource() };
-                let path = url.path().to_string();
-                let result = import_file(Path::new(&path), kind)
+                // path() 返回 Option<Retained<NSString>> —— 必须先解包。
+                let Some(path) = url.path() else {
+                    tracing::warn!("home_picker: 选中的 URL 没有路径");
+                    if accessing {
+                        unsafe { url.stopAccessingSecurityScopedResource() };
+                    }
+                    return;
+                };
+                let result = import_file(Path::new(&path.to_string()), kind)
                     .and_then(|rel| apply_import(rel, kind));
                 if accessing {
                     unsafe { url.stopAccessingSecurityScopedResource() };
