@@ -679,8 +679,9 @@ impl GraphicsList {
         /* 【话梅】从本地文件导入（桌面：文件对话框；iOS：见下方说明）。
            导入结果直接写配置并存档，用户不用手动去翻资源包目录。 */
         if self.home_bg_import.touch(touch, t) {
+            /* iOS 图片走**相册**，不走文件 App —— 照片本来就存在相册里。 */
             #[cfg(target_os = "ios")]
-            crate::home_picker::pick_and_import(crate::home_picker::DecoKind::Background);
+            crate::home_picker::pick_photo();
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             if let Some(res) = crate::home_picker::pick_and_import(crate::home_picker::DecoKind::Background) {
                 match res.and_then(|rel| crate::home_picker::apply_import(rel, crate::home_picker::DecoKind::Background)) {
@@ -748,7 +749,7 @@ impl GraphicsList {
         render_title(
             ui,
             std::borrow::Cow::Borrowed("从文件导入背景"),
-            Some(std::borrow::Cow::Borrowed("选一张图片当主页背景；iOS 请用文件 App 或相册")),
+            Some(std::borrow::Cow::Borrowed("从相册选一张图片当主页背景")),
         );
         self.home_bg_import.render_text(ui, rr, t, "选择图片…", 0.4, false);
         ui.dy(ITEM_HEIGHT);
@@ -756,7 +757,7 @@ impl GraphicsList {
         render_title(
             ui,
             std::borrow::Cow::Borrowed("从文件导入音乐"),
-            Some(std::borrow::Cow::Borrowed("选一段音频当主页音乐")),
+            Some(std::borrow::Cow::Borrowed("从「文件」里选一段音频当主页音乐")),
         );
         self.home_bgm_import.render_text(ui, rr, t, "选择音频…", 0.4, false);
         ui.dy(ITEM_HEIGHT);

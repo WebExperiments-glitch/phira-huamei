@@ -51,11 +51,12 @@
 	<string></string>
 	-->
 
-	<!-- iOS 文件选择器（UIDocumentPickerViewController）选择主页图片/音乐时，
-	     需要一个临时可访问的安全作用域。iCloud 容器声明让「从文件 App 选」
-	     能覆盖 iCloud Drive 里的素材。 -->
-	<key>NSUbiquitousContainers</key>
-	<dict/>
+	<!-- ⚠ 2026-11-17 已移除 NSUbiquitousContainers：「声明 iCloud 容器」
+	     会让系统在启动时尝试注册 iCloud 环境，而我们既没有 iCloud
+	     能力（entitlements 里没有 com.apple.developer.ubiquity-*），
+	     也不需要 iCloud Drive —— 这个空字典反而让所有基于
+	     Document Provider 的界面（文件选择器）出现异常。
+	     不声明 iCloud 才是正确做法：UIDocumentPicker 照样能选本地文件。 -->
 	<key>CFBundleExecutable</key>
 	<string>phira-main</string>
 

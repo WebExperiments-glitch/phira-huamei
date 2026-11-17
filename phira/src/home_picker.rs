@@ -228,3 +228,130 @@ mod picker_ios {
 
 #[cfg(target_os = "ios")]
 pub use picker_ios::pick_and_import;
+
+
+// ── iOS：相册选图（UIImagePickerController）──────────────────
+//
+// 【为什么不用 UIDocumentPicker 选图片】
+//   用户的原话：「哪个好人会把自己照片存在文件里？」
+//   照片就在**相册**，让人去文件 App 翻是反直觉的。
+//
+// 【为什么不用 PHPicker】
+//   PHPicker 是 iOS 14+ 的推荐方案，但它要 objc2-photos-ui 这个新依赖，
+//   版本对齐有风险；而 UIImagePickerController(PhotoLibrary) 虽然标了
+//   deprecated，行为稳定、delegate 简单，且我们已经有 NSPhotoLibrary
+//   UsageDescription。将来真要换 PHPicker，替换本模块即可。
+//
+// 【音频仍走文件 App】
+//   音频本来就在文件里，用 UIDocumentPicker 是对的。
+
+#[cfg(target_os = "ios")]
+mod photo_ios {
+    use super::*;
+    use objc2::{define_class, rc::Retained, MainThreadMarker, MainThreadOnly};
+    use objc2_foundation::{AnyObject, NSDictionary, NSObject, NSObjectProtocol, NSURL};
+    use objc2_ui_kit::{
+        UIImagePickerController, UIImagePickerControllerDelegate, UIImagePickerControllerImageURL,
+        UIImagePickerControllerSourceType, UINavigationControllerDelegate,
+    };
+    use std::cell::RefCell;
+
+    thread_local! {
+        static DELEGATE: RefCell<Option<Retained<PhotoDelegate>>> = const { RefCell::new(None) };
+        static PENDING: std::cell::Cell<Option<DecoKind>> = const { std::cell::Cell::new(None) };
+    }
+
+    define_class! {
+        #[unsafe(super = NSObject)]
+        #[thread_kind = MainThreadOnly]
+        struct PhotoDelegate;
+
+        unsafe impl NSObjectProtocol for PhotoDelegate {}
+
+        // UIImagePickerController 继承自 UINavigationController，
+        // 它的 delegate 同时要求实现这个协议，漏了则回调不触发。
+        unsafe impl UINavigationControllerDelegate for PhotoDelegate {}
+
+        unsafe impl UIImagePickerControllerDelegate for PhotoDelegate {
+            #[unsafe(method(imagePickerController:didFinishPickingMediaWithInfo:))]
+            fn did_finish_picking(
+                &self,
+                _picker: &UIImagePickerController,
+                info: &NSDictionary<objc2_ui_kit::UIImagePickerControllerInfoKey, AnyObject>,
+            ) {
+                let kind = PENDING.with(|k| k.take()).unwrap_or(DecoKind::Background);
+
+                /* 从 info 取原图 URL。
+                   用 ImageURL 而不是 OriginalImage 的原因：
+                   URL 直接指向一个已落盘的临时文件，std::fs::copy 即可；
+                   而 UIImage 还得 PNG/JPEG 编码一遍，多一层损耗与失败面。 */
+                let key = unsafe { UIImagePickerControllerImageURL };
+                let Some(obj) = (unsafe { info.objectForKey(key) }) else {
+                    tracing::warn!("home_picker: 相册回调里没有 ImageURL");
+                    return;
+                };
+                // Retained<T>::downcast 返回 Result<Retained<U>, Retained<T>>（消耗 self）
+                let Ok(url) = obj.downcast::<NSURL>() else {
+                    tracing::warn!("home_picker: ImageURL 不是 NSURL");
+                    return;
+                };
+                let Some(path) = url.path() else {
+                    tracing::warn!("home_picker: 相册 URL 没有路径");
+                    return;
+                };
+
+                match import_file(Path::new(&path.to_string()), kind)
+                    .and_then(|rel| apply_import(rel, kind))
+                {
+                    Ok(()) => tracing::info!("home_picker: 相册导入成功"),
+                    Err(err) => tracing::warn!("home_picker: 相册导入失败 {err}"),
+                }
+            }
+
+            #[unsafe(method(imagePickerControllerDidCancel:))]
+            fn did_cancel(&self, _picker: &UIImagePickerController) {
+                PENDING.with(|k| k.set(None));
+            }
+        }
+    }
+
+    impl PhotoDelegate {
+        fn new(mtm: MainThreadMarker) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(());
+            unsafe { objc2::msg_send![super(this), init] }
+        }
+    }
+
+    /// 打开相册选一张图当主页背景。
+    pub fn pick_photo() {
+        let mtm = MainThreadMarker::new().expect("home_picker: 必须在主线程调用");
+        PENDING.with(|k| k.set(Some(DecoKind::Background)));
+
+        let picker = UIImagePickerController::new(mtm);
+        #[allow(deprecated)]
+        unsafe {
+            picker.setSourceType(UIImagePickerControllerSourceType::PhotoLibrary)
+        };
+
+        let delegate = PhotoDelegate::new(mtm);
+        /* `setDelegate:` 在 objc2 里的参数类型是
+           `Option<&AnyObject>`（组合协议 UIImagePickerControllerDelegate
+           + UINavigationControllerDelegate，无法用单个 ProtocolObject 表达）。
+           所以这里用 msg_send 直接投递，是 objc2 处理组合协议 delegate 的常规做法。
+           SAFETY: delegate 是 NSObject 子类，且我们把它存进 thread_local
+           保证生命周期覆盖整个弹窗过程。 */
+        unsafe {
+            let _: () = objc2::msg_send![&picker, setDelegate: &*delegate];
+        }
+        DELEGATE.with(|it| *it.borrow_mut() = Some(delegate));
+
+        if let Some(controller) = inputbox::backend::IOS::get_top_view_controller(mtm) {
+            controller.presentViewController_animated_completion(&picker, true, None);
+        } else {
+            tracing::warn!("home_picker: 找不到顶层视图控制器，无法弹出相册");
+        }
+    }
+}
+
+#[cfg(target_os = "ios")]
+pub use photo_ios::pick_photo;
