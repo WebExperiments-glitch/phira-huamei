@@ -20,6 +20,15 @@ pub static CLIENT_TOKEN: Lazy<ArcSwap<Option<String>>> = Lazy::new(|| ArcSwap::f
 
 static CLIENT: Lazy<ArcSwap<reqwest::Client>> = Lazy::new(|| ArcSwap::from_pointee(basic_client_builder().build().unwrap()));
 
+/// 【话梅 2026-11-17】取全局 HTTP 客户端（带连接池/keepalive/nodelay）。
+///
+/// 任何「新建 client 再请求」的地方都应该改成用它 —— 新建等于丢掉
+/// 连接复用，每次重新握手。谱面下载的 2~3 秒延迟就是这么来的。
+#[inline]
+pub fn http_client() -> reqwest::Client {
+    CLIENT.load().as_ref().clone()
+}
+
 pub struct Client;
 
 // pub const API_URL: &str = "http://localhost:2924";
@@ -33,7 +42,22 @@ pub struct Client;
 //   HUAMEI_API_BASE=http://127.0.0.1:5199/api/phira cargo build -p phira-main
 pub const API_URL: &str = match option_env!("HUAMEI_API_BASE") {
     Some(v) => v,
-    None => "https://phm.app.workbuddy.host/api/phira",
+    /* 【话梅 2026-11-17】直连 Phira 官方，**跳过自建代理**。
+       ─────────────────────────────────────────────────────────
+       为什么改：代理多了一跳（客户端 → 我们的 Node → 官方），
+       实测官方直连 0.08~0.11 秒返回，走代理要 2~3 秒。
+
+       为什么可以直连：官方读取类接口**允许匿名访问**，实测均 200：
+         · /chart?page=0&pageNum=1        列表
+         · /chart/{id}                    详情
+         · /record/list15/{id}?std=true   排行榜
+         · /chart?search=无呼吸义务        搜索（中文也能命中）
+       且官方会**忽略**无效的 Authorization 头和未知的 sharecode 参数，
+       所以我们现有的请求构造不用改。
+
+       ⚠ 不影响的：成绩上报、云端鉴权、取谱都挂在 HUAMEI_SITE 下，
+         与 API_URL 是两套独立基址，改这里不会让上传失效。 */
+    None => "https://phira.5wyxi.com",
 };
 
 /// huamei 客户端版本 —— **独立于上游 0.8.2 的版本轴**。
@@ -46,7 +70,7 @@ pub const API_URL: &str = match option_env!("HUAMEI_API_BASE") {
 /// ⚠ 服务端**不**用它做任何门控（只存不判），所以升级无兼容风险。
 ///   它长期停在 `huamei.1`，中间攒了 9 次改动都没动 —— 别学。
 /// 本次 +1：移植上游 4 个 bugfix（Bad 早晚统计 / 极短速度事件崩溃 / autoplay 特效色 / 透明插图残影）。
-pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.48";
+pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.49";
 
 /// 站点根 —— 取谱代理、云端鉴权、成绩上报都挂在它下面。
 ///
@@ -103,6 +127,27 @@ pub fn basic_client_builder() -> ClientBuilder {
         }
     });
     let mut builder = reqwest::ClientBuilder::new().redirect(policy);
+
+    /* 【话梅 2026-11-17】网络参数调优 —— 直接对着「下载谱面 2~3 秒」这个问题。
+       ─────────────────────────────────────────────────────────────
+       背景：我们的 API 走的是**自建代理**（phm.app.workbuddy.host/api/phira），
+       比原版直连多一跳。那一跳的延迟我们改不了，但下面这些都能改：
+
+       · connect_timeout  没有它时，DNS 慢/丢包会一路卡到系统默认（可能几十秒）
+       · timeout          整体上限，避免请求悬挂（排行榜 504 时一直转圈就是这个）
+       · tcp_keepalive    移动网络下 NAT 会静默回收空闲连接；没有 keepalive
+                          时下次请求要**重新做 TCP + TLS 握手**（1~2 个 RTT，
+                          在 4G 上就是几百毫秒到 1 秒）—— 这是差异的大头
+       · pool_idle_timeout 连接池保活时长，配合 keepalive 让复用真正生效
+       · tcp_nodelay      关掉 Nagle。音游的 API 全是小包（JSON、查询），
+                          攒包会平白多出几十毫秒 */
+    builder = builder
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_secs(20))
+        .tcp_keepalive(std::time::Duration::from_secs(45))
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .tcp_nodelay(true);
+
     if get_data().accept_invalid_cert {
         builder = builder.danger_accept_invalid_certs(true);
     }

@@ -8,7 +8,7 @@ use super::{
 use crate::{
     charts_view::NEED_UPDATE,
     client::{
-        basic_client_builder, recv_raw, Chart, ChartRef, ChartRefChartInfo, Client, Collection, CollectionUpdate, Permissions, Ptr, Record, User,
+        recv_raw, Chart, ChartRef, ChartRefChartInfo, Client, Collection, CollectionUpdate, Permissions, Ptr, Record, User,
         UserManager, CLIENT_TOKEN,
     },
     data::{BriefChartInfo, LocalChart},
@@ -651,7 +651,13 @@ impl SongScene {
                     async fn download(mut file: impl Write, url: &str, prog_wk: &Weak<Mutex<Option<f32>>>) -> Result<()> {
                         let Some(prog) = prog_wk.upgrade() else { return Ok(()) };
                         *prog.lock().unwrap() = None;
-                        let req = basic_client_builder().build().unwrap().get(url);
+                        /* 【话梅 2026-11-17】复用全局 CLIENT，别每次新建。
+                           新建 client = 每次都要重新做 TCP + TLS 握手
+                           （移动网络下 1~2 个 RTT，几百毫秒到 1 秒），
+                           连接池、keepalive、tcp_nodelay 全部失效 ——
+                           这就是「下载谱面 2~3 秒」的主要来源。
+                           全局 CLIENT 已经在我们调过的 builder 上建好。 */
+                        let req = crate::client::http_client().get(url);
                         let req = if let Some(token) = CLIENT_TOKEN.load().as_ref() {
                             req.header("Authorization", format!("Bearer {token}"))
                         } else {
@@ -738,13 +744,22 @@ impl SongScene {
             return;
         }
         let Some(id) = self.info.id else { return };
-        self.ldb = None;
+        /* 【话梅 2026-11-17】不要先清空。
+           原来这里无条件 `self.ldb = None`：一旦刷新失败（服务端 504 很常见），
+           玩家看到的不是上一次的榜单，而是**空白 + 一直转圈**。
+           保留旧数据，失败时至少还能看到上次的结果。 */
         let std = self.ldb_std;
         self.ldb_task = Some(Task::new(async move {
-            Ok(recv_raw(Client::get(format!("/record/list15/{id}")).query(&[("std", std)]))
-                .await?
-                .json()
-                .await?)
+            Ok(recv_raw(
+                Client::get(format!("/record/list15/{id}"))
+                    .query(&[("std", std)])
+                    /* 排行榜是次要信息，不该让人干等：
+                       8 秒（远小于全局 20 秒）就放弃，让 UI 尽快给出反馈。 */
+                    .timeout(std::time::Duration::from_secs(8)),
+            )
+            .await?
+            .json()
+            .await?)
         }));
     }
 
@@ -2515,7 +2530,17 @@ impl Scene for SongScene {
             if let Some(res) = task.take() {
                 match res {
                     Err(err) => {
-                        show_error(err.context(tl!("ldb-load-failed")));
+                        /* 504 是 Phira 官方服务端/网关超时，与我们无关，
+                           提示里说清楚，免得玩家以为是客户端坏了。 */
+                        let msg = err.to_string();
+                        if msg.contains("504") || msg.contains("Gateway") {
+                            show_error(anyhow::Error::msg(
+                                "排行榜服务暂时超时（Phira 服务端繁忙）。
+稍后重试即可，不影响游玩与成绩上传。",
+                            ));
+                        } else {
+                            show_error(err.context(tl!("ldb-load-failed")));
+                        }
                     }
                     Ok(items) => {
                         let rank = get_data()

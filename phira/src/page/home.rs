@@ -179,12 +179,23 @@ impl HomePage {
             has_new_task: None,
             has_new: false,
 
-            check_update_task: Some(Task::new(async move {
-                Ok(recv_raw(Client::get("/check-update").query(&[("version", env!("CARGO_PKG_VERSION")), ("flavor", &flavor)]))
-                    .await?
-                    .json()
-                    .await?)
-            })),
+            /* 【话梅 2026-11-17】**停用官方的版本检查**。
+               ─────────────────────────────────────────────────────────
+               原因：API_URL 改成直连官方之后，`/check-update` 会拿我们的
+               `0.8.2-beta.46` 去和官方最新版（0.8.3）比较，于是每次启动
+               都弹「发现新版本」。
+
+               这不合逻辑：我们是独立分支，版本号自成一条轴
+               （见 HUAMEI_CLIENT_VER），官方的 0.8.3 对我们没有意义；
+               更不该引导玩家去装官方包 —— 那会把我们的改动全丢掉。
+
+               将来要做「自己控制的更新」，正确路径是：
+                 · 请求 `{HUAMEI_SITE}/api/hm/version`（我们自己的接口）
+                 · 比较 HUAMEI_CLIENT_VER 而不是 CARGO_PKG_VERSION
+                 · 返回的 URL 指向我们自己的分发地址
+               把下面这行换回 Task::new(...) 即可，UI 那段弹窗逻辑
+               （ignored_version / 跳过此版本）可以原样复用。 */
+            check_update_task: None,
             check_bold_font_update_task: {
                 let cksum = BOLD_FONT_CKSUM.with(|it| it.borrow().clone());
                 Some(Task::new(async move {
