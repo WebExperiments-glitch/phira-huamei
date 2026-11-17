@@ -339,6 +339,10 @@ async fn the_main() -> Result<()> {
     /* 窗口已经建好（GLKViewController 就在里面），config 也读出来了 ——
        这时才能改渲染帧率。低画质 = 60fps，否则屏幕满帧。 */
     apply_frame_rate(get_data().config.low_quality);
+    /* 【话梅 2026-11-17】同步全局 TAA 开关。
+       prpr 的 Main 拿不到 phira 的 config，所以用一个原子量解耦。
+       之后设置页改 TAA 也要同步更新（见 settings.rs 的 aa_btn 处理）。 */
+    prpr::taa::set_global_enabled(get_data().config.taa);
     sync_data();
     save_data()?;
 

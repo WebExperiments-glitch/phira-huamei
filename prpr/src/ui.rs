@@ -679,15 +679,43 @@ pub struct Ui<'a> {
     pub stroke_options: StrokeOptions,
 
     pub alpha: f32,
+
+    /// 【话梅 2026-11-17】本帧的离屏渲染目标（全局 TAA 用）。
+    /// `camera()` 会把它带进 Camera2D —— 否则后面任何 `set_camera(&ui.camera())`
+    /// 都会把目标切回屏幕，叠加层（对话框/加载层）就画到屏幕上了。
+    pub render_target: Option<RenderTarget>,
 }
 
 impl<'a> Ui<'a> {
     pub fn new(text_painter: &'a mut TextPainter, viewport: Option<(i32, i32, i32, i32)>) -> Self {
-        unsafe { get_internal_gl() }.quad_context.begin_default_pass(PassAction::Clear {
-            depth: None,
-            stencil: Some(0),
-            color: None,
-        });
+        Self::new_with_target(text_painter, viewport, None)
+    }
+
+    /// 【话梅 2026-11-17】带指定渲染目标的构造 —— 全局 TAA 的前提。
+    ///
+    /// 为什么要这个重载：`begin_default_pass` **总是绑定默认 framebuffer（屏幕）**，
+    /// 会把 `set_camera` 设好的离屏目标顶掉。所以想让整个 UI 画进离屏纹理，
+    /// 必须在开启 pass 的那一刻就指定 target，之后再 set_camera 才有效。
+    pub fn new_with_target(
+        text_painter: &'a mut TextPainter,
+        viewport: Option<(i32, i32, i32, i32)>,
+        target: Option<RenderTarget>,
+    ) -> Self {
+        unsafe {
+            let gl = get_internal_gl();
+            let action = PassAction::Clear {
+                depth: None,
+                stencil: Some(0),
+                color: None,
+            };
+            match target {
+                /* 这个 miniquad fork 的签名是
+                   `begin_pass(&mut self, pass: impl Into<Option<RenderPass>>, action)`
+                   —— 直接传 RenderPass 即可，没有 PassTarget 这个类型。 */
+                Some(t) => gl.quad_context.begin_pass(t.render_pass, action),
+                None => gl.quad_context.begin_default_pass(action),
+            }
+        }
         let viewport = viewport.unwrap_or_else(|| (0, 0, screen_width() as i32, screen_height() as i32));
         Self {
             top: viewport.3 as f32 / viewport.2 as f32,
@@ -707,6 +735,7 @@ impl<'a> Ui<'a> {
             stroke_options: StrokeOptions::default(),
 
             alpha: 1.,
+            render_target: target,
         }
     }
 
@@ -714,6 +743,9 @@ impl<'a> Ui<'a> {
         Camera2D {
             zoom: vec2(1., -self.viewport.2 as f32 / self.viewport.3 as f32),
             viewport: Some(self.viewport),
+            /* 有离屏目标时必须带下去：否则 set_camera(&ui.camera())
+               会把渲染目标切回屏幕，叠加层漏到屏幕外。 */
+            render_target: self.render_target,
             ..Default::default()
         }
     }

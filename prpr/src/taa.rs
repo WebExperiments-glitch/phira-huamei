@@ -154,3 +154,20 @@ mod tests {
         assert!(taa.history_weight(100.) >= 0.35, "下限不该低于 0.35，否则等于没开");
     }
 }
+
+/// 【话梅 2026-11-17】全局 TAA 开关。
+///
+/// 为什么用全局原子量：TAA 要提到 `Main::render` 层才能**全局生效**
+/// （大厅、设置页、谱面库都吃到），但 `Main` 属于 prpr，拿不到
+/// phira 管的 config。用一个原子量解耦，phira 在启动/改设置时写入。
+pub static GLOBAL_TAA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 由 phira 调用：config.taa 变化时同步。
+pub fn set_global_enabled(on: bool) {
+    GLOBAL_TAA.store(on, std::sync::atomic::Ordering::Release);
+}
+
+#[inline]
+pub fn global_enabled() -> bool {
+    GLOBAL_TAA.load(std::sync::atomic::Ordering::Acquire)
+}

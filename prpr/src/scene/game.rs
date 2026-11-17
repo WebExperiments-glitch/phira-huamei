@@ -876,6 +876,11 @@ impl Scene for GameScene {
         Ok(())
     }
 
+    /// 对局自己走 chart_target 的 TAA/MSAA，全局那一层要让位。
+    fn handles_own_aa(&self) -> bool {
+        true
+    }
+
     fn pause(&mut self, tm: &mut TimeManager) -> Result<()> {
         if !tm.paused() {
             self.pause_rewind = None;

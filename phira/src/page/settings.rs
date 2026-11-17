@@ -627,6 +627,9 @@ impl GraphicsList {
                 2 => { config.sample_count = 4; config.taa = false; }
                 _ => { config.sample_count = 1; config.taa = true; }
             }
+            /* 同步全局 TAA（大厅/设置页/谱面库生效）。
+               对局内 GameScene 自己有一套，会通过 handles_own_aa 让位。 */
+            prpr::taa::set_global_enabled(config.taa);
             return Ok(Some(true));
         }
 
@@ -773,7 +776,10 @@ impl GraphicsList {
         render_title(
             ui,
             std::borrow::Cow::Borrowed("抗锯齿"),
-            Some(std::borrow::Cow::Borrowed("关闭 / MSAA 2x / MSAA 4x / TAA")),
+            /* 【话梅 2026-11-17】写清两者不同的生效范围：
+               · MSAA 走 chart_target，只在对局内
+               · TAA 已提到 Main::render 层，大厅/设置页/谱面库也生效 */
+            Some(std::borrow::Cow::Borrowed("MSAA 仅对局内；TAA 全局生效")),
         );
         self.aa_btn.render(ui, rr, t);
         ui.dy(ITEM_HEIGHT);

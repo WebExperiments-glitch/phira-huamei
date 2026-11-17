@@ -446,6 +446,14 @@ pub trait Scene {
     }
     fn update(&mut self, tm: &mut TimeManager) -> Result<()>;
     fn render(&mut self, tm: &mut TimeManager, ui: &mut Ui) -> Result<()>;
+    /// 该场景是否**自己**处理抗锯齿（有自己的离屏目标 + 时间累积）。
+    ///
+    /// 为 true 时，`Main::render` 的全局 TAA 会让位 —— 否则对局画面会被
+    /// 混合两次，结果是明显发糊而不是更干净。
+    fn handles_own_aa(&self) -> bool {
+        false
+    }
+
     fn next_scene(&mut self, _tm: &mut TimeManager) -> NextScene {
         NextScene::None
     }
@@ -476,6 +484,12 @@ pub struct Main {
     pub top_level: bool,
     touches: Option<Vec<Touch>>,
     pub viewport: Option<(i32, i32, i32, i32)>,
+
+    /// 【话梅 2026-11-17】全局 TAA 状态（大厅/设置页也生效）。
+    taa: crate::taa::Taa,
+    /// 全局 TAA 的离屏目标（尺寸 = 窗口）
+    taa_target: Option<RenderTarget>,
+    taa_dim: (u32, u32),
 }
 
 impl Main {
@@ -501,6 +515,9 @@ impl Main {
             top_level: true,
             touches: None,
             viewport: None,
+            taa: Default::default(),
+            taa_target: None,
+            taa_dim: (0, 0),
         })
     }
 
@@ -617,7 +634,50 @@ impl Main {
         if self.paused {
             return Ok(());
         }
-        let mut ui = Ui::new(painter, self.viewport);
+        /* 【话梅 2026-11-17】全局 TAA：整个 UI 先画进离屏纹理，
+           再按「当前帧 w + 历史 1-w」叠到屏幕。
+
+           为什么必须提到这一层：原来 TAA 只在 GameScene 的 chart_target
+           路径里做，大厅/设置页/谱面库没有离屏目标，所以设置里改 TAA
+           在大厅完全看不出变化（用户实测反馈）。
+
+           为什么用全局原子开关而不是读 config：Main 属于 prpr，
+           拿不到 phira 管的 config。phira 在启动与改设置时写入
+           taa::set_global_enabled(config.taa)。 */
+        let dim = (screen_width() as u32, screen_height() as u32);
+        let want_taa = crate::taa::global_enabled()
+            && dim.0 > 0
+            && dim.1 > 0
+            && !self.scenes.last().is_some_and(|it| it.handles_own_aa());
+
+        let taa_jitter = if want_taa {
+            if self.taa_dim != dim || self.taa_target.is_none() {
+                if let Some(old) = self.taa_target.take() {
+                    old.delete();
+                }
+                self.taa_target = Some(render_target(dim.0, dim.1));
+                self.taa_dim = dim;
+                // 尺寸变了历史就作废，否则会采到尺寸不符的旧画面
+                self.taa.reset();
+            }
+            self.taa.ensure_history(dim);
+            Some(self.taa.jitter(dim))
+        } else {
+            None
+        };
+
+        let target = if want_taa { self.taa_target } else { None };
+        let mut ui = Ui::new_with_target(painter, self.viewport, target);
+
+        /* 亚像素抖动：加在 UI 变换矩阵的平移量上。
+           不走相机 —— 场景（尤其 GameScene）自己会 set_camera，
+           改了会被覆盖，还会和它自己的 jitter 叠加成双倍抖动。
+           UI 顶点空间是 [-1,1]，而 jitter 的返回值正是这个空间里的
+           半像素偏移，所以直接左乘平移矩阵即等效。 */
+        if let Some(j) = taa_jitter {
+            ui.transform = nalgebra::Translation2::new(j.x, j.y).to_homogeneous() * ui.transform;
+        }
+
         ui.set_touches(self.touches.take());
         ui.scope(|ui| self.scenes.last_mut().unwrap().render(&mut self.tm, ui))?;
         if self.top_level {
@@ -656,6 +716,67 @@ impl Main {
                 FULL_LOADING.take();
             }
             pop_camera_state();
+        }
+
+        /* 【话梅 2026-11-17】TAA 收尾：把离屏内容叠到屏幕，并写入历史。
+           顺序与 game.rs 里那份保持一致，踩过的坑也写在那儿：
+           先画当前帧（不透明），再以 alpha=1-w 叠历史 —— 反了就是历史盖住当前。 */
+        if let (true, Some(t)) = (want_taa, self.taa_target) {
+            unsafe { get_internal_gl() }.flush();
+            push_camera_state();
+            set_camera(&Camera2D {
+                zoom: vec2(1., 1.),
+                ..Default::default()
+            });
+
+            let w = self.taa.history_weight(0.);
+            let hist = self.taa.history();
+            draw_texture_ex(
+                t.texture,
+                -1.,
+                -1.,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(2., 2.)),
+                    ..Default::default()
+                },
+            );
+            if let Some(h) = hist {
+                draw_texture_ex(
+                    h,
+                    -1.,
+                    -1.,
+                    Color { a: 1. - w, ..WHITE },
+                    DrawTextureParams {
+                        dest_size: Some(vec2(2., 2.)),
+                        ..Default::default()
+                    },
+                );
+            }
+            pop_camera_state();
+
+            /* 把当前帧写进历史。少了这步历史永远是空的，
+               下一帧混合就什么都没叠上（看起来像没生效）。 */
+            if let Some(h) = self.taa.history_target() {
+                push_camera_state();
+                set_camera(&Camera2D {
+                    zoom: vec2(1., 1.),
+                    render_target: Some(h),
+                    ..Default::default()
+                });
+                draw_texture_ex(
+                    t.texture,
+                    -1.,
+                    -1.,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(2., 2.)),
+                        ..Default::default()
+                    },
+                );
+                pop_camera_state();
+            }
+            self.taa.advance();
         }
         Ok(())
     }
