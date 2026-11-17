@@ -1518,6 +1518,19 @@ impl Scene for GameScene {
     }
 
     fn next_scene(&mut self, tm: &mut TimeManager) -> NextScene {
+        /* 【话梅 2026-11-17】离开对局**必须显式暂停音乐**。
+           sasa 的 Music 内部是 `Arc` 共享给音频渲染线程 ——
+           **drop 不会停止播放**，所以只要不 pause，回大厅/退出展示谱面后
+           曲子会一直放下去（用户实测：返回大厅后音频还在响）。
+           覆盖第三条路径：完成结算退出、暂停菜单返回、展示模式(View)退出。 */
+        let leaving = self.should_exit
+            || matches!(&self.next_scene, Some(n) if !matches!(n, NextScene::None));
+        if leaving {
+            if let Err(err) = self.music.pause() {
+                tracing::warn!("next_scene: 暂停音乐失败 {err}");
+            }
+        }
+
         if self.should_exit {
             if tm.paused() {
                 tm.resume();
