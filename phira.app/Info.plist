@@ -38,6 +38,24 @@
 	<!-- 陀螺仪/加速度计：iOS 从 10 起要这个声明才能读 CoreMotion。 -->
 	<key>NSMotionUsageDescription</key>
 	<string>用于记录游玩时的设备姿态与晃动，分析手持角度对判定偏移的影响。</string>
+
+	<!-- 主页装扮：从相册里挑一张图当主页背景。
+	     ⚠ 措辞必须诚实 —— 我们只读用户明确选中的那一张，不扫描整个相册。
+	     只声明照片库读取，不声明相机（没有拍照功能，不多要权限）。 -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>仅在你主动选择时读取你指定的照片，用作主页背景；不会扫描或上传其余相册内容。</string>
+
+	<!-- 相机：暂未提供拍照功能。若后续加入「直接拍一张当背景」再启用此项。 -->
+	<!--
+	<key>NSCameraUsageDescription</key>
+	<string></string>
+	-->
+
+	<!-- iOS 文件选择器（UIDocumentPickerViewController）选择主页图片/音乐时，
+	     需要一个临时可访问的安全作用域。iCloud 容器声明让「从文件 App 选」
+	     能覆盖 iCloud Drive 里的素材。 -->
+	<key>NSUbiquitousContainers</key>
+	<dict/>
 	<key>CFBundleExecutable</key>
 	<string>phira-main</string>
 

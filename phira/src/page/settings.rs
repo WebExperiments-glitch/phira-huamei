@@ -522,6 +522,9 @@ struct GraphicsList {
     home_bg_btn: DRectButton,
     /// 【话梅】主页 BGM 切换（含「无」）
     home_bgm_btn: DRectButton,
+    /// 【话梅】从本地文件/相册导入装扮素材
+    home_bg_import: DRectButton,
+    home_bgm_import: DRectButton,
 }
 
 /// 渲染精度档位（百分比）。和绝区零的「渲染精度」同一个概念：
@@ -568,6 +571,8 @@ impl GraphicsList {
             lowq_btn: DRectButton::new(),
             home_bg_btn: DRectButton::new(),
             home_bgm_btn: DRectButton::new(),
+            home_bg_import: DRectButton::new(),
+            home_bgm_import: DRectButton::new(),
         }
     }
 
@@ -671,6 +676,32 @@ impl GraphicsList {
             crate::scene::BGM_RELOAD.store(true, std::sync::atomic::Ordering::Release);
             return Ok(Some(true));
         }
+        /* 【话梅】从本地文件导入（桌面：文件对话框；iOS：见下方说明）。
+           导入结果直接写配置并存档，用户不用手动去翻资源包目录。 */
+        if self.home_bg_import.touch(touch, t) {
+            #[cfg(target_os = "ios")]
+            crate::home_picker::pick_and_import(crate::home_picker::DecoKind::Background);
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
+            if let Some(res) = crate::home_picker::pick_and_import(crate::home_picker::DecoKind::Background) {
+                match res.and_then(|rel| crate::home_picker::apply_import(rel, crate::home_picker::DecoKind::Background)) {
+                    Ok(()) => { let _ = show_message("背景已导入"); }
+                    Err(err) => { let _ = show_error(anyhow::Error::msg(format!("导入失败：{err}"))); }
+                }
+            }
+            return Ok(Some(true));
+        }
+        if self.home_bgm_import.touch(touch, t) {
+            #[cfg(target_os = "ios")]
+            crate::home_picker::pick_and_import(crate::home_picker::DecoKind::Music);
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
+            if let Some(res) = crate::home_picker::pick_and_import(crate::home_picker::DecoKind::Music) {
+                match res.and_then(|rel| crate::home_picker::apply_import(rel, crate::home_picker::DecoKind::Music)) {
+                    Ok(()) => { let _ = show_message("音乐已导入"); }
+                    Err(err) => { let _ = show_error(anyhow::Error::msg(format!("导入失败：{err}"))); }
+                }
+            }
+            return Ok(Some(true));
+        }
         Ok(None)
     }
 
@@ -712,6 +743,22 @@ impl GraphicsList {
             Some(std::borrow::Cow::Borrowed("资源包内音频；点击切换，含「无」")),
         );
         self.home_bgm_btn.render_text(ui, rr, t, &bgm_label, 0.42, c.home_bgm.is_some());
+        ui.dy(ITEM_HEIGHT);
+
+        render_title(
+            ui,
+            std::borrow::Cow::Borrowed("从文件导入背景"),
+            Some(std::borrow::Cow::Borrowed("选一张图片当主页背景；iOS 请用文件 App 或相册")),
+        );
+        self.home_bg_import.render_text(ui, rr, t, "选择图片…", 0.4, false);
+        ui.dy(ITEM_HEIGHT);
+
+        render_title(
+            ui,
+            std::borrow::Cow::Borrowed("从文件导入音乐"),
+            Some(std::borrow::Cow::Borrowed("选一段音频当主页音乐")),
+        );
+        self.home_bgm_import.render_text(ui, rr, t, "选择音频…", 0.4, false);
         ui.dy(ITEM_HEIGHT);
 
         render_title(
