@@ -302,10 +302,36 @@ async fn the_main() -> Result<()> {
     }
 
     let dir = dir::root()?;
-    let mut data: Data = std::fs::read_to_string(format!("{dir}/data.json"))
-        .map_err(anyhow::Error::new)
-        .and_then(|s| Ok(serde_json::from_str(&s)?))
-        .unwrap_or_default();
+    let data_path = format!("{dir}/data.json");
+    /* 【话梅 2026-11-17 存档安全】解析失败**绝不能静默重置**。
+       ─────────────────────────────────────────────────────────
+       原写法：
+           serde_json::from_str(&s).unwrap_or_default()
+       问题：data.json 里**任何一个字段**反序列化失败（改了类型、某条记录
+       损坏、旧版本字段不兼容），整个 Data 都会变成默认值；而下面第 315 行
+       紧接着 `save_data()?` 会立刻把默认值写回原文件 ——
+       **玩家的全部存档就永久没了，连恢复的机会都没有。**
+
+       现在的做法：解析失败先把原文件备份成 `data.json.bad-<时间戳>`，
+       再退回默认值。这样至少留了证据和可恢复的副本。
+       （真正的字段级容错见 Data 上那些 #[serde(default)]；
+         这里兜的是它们兜不住的类型错误。） */
+    let mut data: Data = match std::fs::read_to_string(&data_path) {
+        Ok(s) if !s.trim().is_empty() => match serde_json::from_str::<Data>(&s) {
+            Ok(d) => d,
+            Err(err) => {
+                let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                let bak = format!("{data_path}.bad-{stamp}");
+                if let Err(e) = std::fs::copy(&data_path, &bak) {
+                    tracing::error!("data.json 解析失败且备份失败（{e}）：{err}");
+                } else {
+                    tracing::error!("data.json 解析失败，已备份到 {bak}：{err}");
+                }
+                Data::default()
+            }
+        },
+        _ => Data::default(),
+    };
     data.init().await?;
     set_data(data);
     /* 窗口已经建好（GLKViewController 就在里面），config 也读出来了 ——
