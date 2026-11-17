@@ -745,7 +745,18 @@ impl<'a> Ui<'a> {
     }
 
     fn set_tolerance(&mut self) {
+        /* 【话梅 2026-11-17】NaN 兜底。
+           来源：transform 的缩放若为 0/NaN（布局算出坏值、或某层动画
+           出现 NaN），这里就是 inf/NaN，lyon 的 tessellate_* 会返回
+           ToleranceIsNaN，而调用点是 .unwrap() —— 直接 panic。
+
+           后果远比"画错一个圆"严重：panic 让主 async 块中毒，
+           之后所有 future 都失败，界面彻底失灵（用户实测：黑屏、
+           点什么都没反应，只能杀进程重进）。
+
+           所以这里给一个安全值，宁可这一帧的曲线精度不完美。 */
         let tol = 0.15 / (self.transform.transform_vector(&Vector::new(1., 0.)).norm() * screen_width() / 2.);
+        let tol = if tol.is_finite() && tol > 0. { tol } else { 1e-3 };
         self.fill_options.tolerance = tol;
         self.stroke_options.tolerance = tol;
     }
@@ -760,35 +771,59 @@ impl<'a> Ui<'a> {
 
     pub fn fill_path(&mut self, path: impl IntoIterator<Item = PathEvent>, shading: impl IntoShading) {
         self.draw_lyon(shading.into_shading(), |this, shaded| {
-            this.fill_tess
+            if let Err(err) = this
+                .fill_tess
                 .tessellate(path, &this.fill_options, &mut BuffersBuilder::new(&mut this.vertex_buffers, shaded))
-                .unwrap();
+            {
+                tracing::warn!("fill_path tessellate 失败（跳过本帧）：{err:?}");
+            }
         });
     }
 
     pub fn fill_circle(&mut self, x: f32, y: f32, radius: f32, shading: impl IntoShading) {
+        /* 参数守卫：坐标/半径非有限或半径 <=0 时直接跳过。
+           ⚠ 不要改成 `.unwrap_or_default()` 之类继续往下走 ——
+             tessellate 失败时 vertex_buffers 可能已被写入一半，
+             继续提交会画出残缺几何。跳过这一帧是更安全的做法。 */
+        if !x.is_finite() || !y.is_finite() || !radius.is_finite() || radius <= 0. {
+            return;
+        }
         self.draw_lyon(shading.into_shading(), |this, shaded| {
-            this.fill_tess
-                .tessellate_circle(lm::point(x, y), radius, &this.fill_options, &mut BuffersBuilder::new(&mut this.vertex_buffers, shaded))
-                .unwrap();
+            if let Err(err) = this.fill_tess.tessellate_circle(
+                lm::point(x, y),
+                radius,
+                &this.fill_options,
+                &mut BuffersBuilder::new(&mut this.vertex_buffers, shaded),
+            ) {
+                tracing::warn!("fill_circle tessellate 失败（跳过本帧）：{err:?}");
+            }
         });
     }
 
     pub fn stroke_circle(&mut self, x: f32, y: f32, radius: f32, width: f32, shading: impl IntoShading) {
+        if !x.is_finite() || !y.is_finite() || !radius.is_finite() || radius <= 0. || !width.is_finite() || width <= 0. {
+            return;
+        }
         self.draw_lyon(shading.into_shading(), |this, shaded| {
             this.stroke_options.line_width = width;
-            this.stroke_tess
+            if let Err(err) = this
+                .stroke_tess
                 .tessellate_circle(lm::point(x, y), radius, &this.stroke_options, &mut BuffersBuilder::new(&mut this.vertex_buffers, shaded))
-                .unwrap();
+            {
+                tracing::warn!("stroke_circle tessellate 失败（跳过本帧）：{err:?}");
+            }
         });
     }
 
     pub fn stroke_path(&mut self, path: &Path, width: f32, shading: impl IntoShading) {
         self.draw_lyon(shading.into_shading(), |this, shaded| {
             this.stroke_options.line_width = width;
-            this.stroke_tess
+            if let Err(err) = this
+                .stroke_tess
                 .tessellate_path(path, &this.stroke_options, &mut BuffersBuilder::new(&mut this.vertex_buffers, shaded))
-                .unwrap();
+            {
+                tracing::warn!("stroke_path tessellate 失败（跳过本帧）：{err:?}");
+            }
         });
     }
 
@@ -826,7 +861,14 @@ impl<'a> Ui<'a> {
     }
 
     pub fn to_local(&self, pt: (f32, f32)) -> (f32, f32) {
-        let r = self.transform.try_inverse().unwrap().transform_point(&Point::new(pt.0, pt.1));
+        /* transform 退化（缩放为 0 / 含 NaN）时 try_inverse 返回 None。
+           原来直接 unwrap → panic → 主 async 中毒 → 界面全废。
+           这里降级返回原点：坐标算不准只是点错一次，远好过整个 UI 死掉。 */
+        let Some(inv) = self.transform.try_inverse() else {
+            tracing::warn!("to_local: transform 不可逆（退化/NaN），返回原点");
+            return (0., 0.);
+        };
+        let r = inv.transform_point(&Point::new(pt.0, pt.1));
         (r.x, r.y)
     }
 

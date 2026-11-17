@@ -6,6 +6,17 @@ pub struct TimeManager {
     pub adjust_time: bool,
     pub start_time: f64,
     pause_time: Option<f64>,
+    /// 【话梅 2026-11-17】`pause()` 那一刻的「全局累计系统暂停」快照。
+    ///
+    /// 为什么必须有它：`tm.pause()`（玩家暂停/切后台同时触发）会把
+    /// pause_time 冻结在某一刻，而 `now()` 又要减去 system_paused_secs()。
+    /// 两者叠加 = **同一段时间被扣两次**：
+    ///   暂停 1 秒 → pause_time 冻结 → 再减 1 秒 → now() 倒退 1 秒
+    /// 反复暂停/继续之后，谱面时间会比音频越来越慢 —— 正是
+    /// 「倒计时反复进出后音画不同步」的根因。
+    ///
+    /// 修法：暂停期间用这份快照（冻结值），恢复后才用实时值。
+    pause_total_at_pause: f64,
     pub speed: f64,
     pub force: f64,
     wait: f64,
@@ -102,6 +113,7 @@ impl TimeManager {
             adjust_time: false,
             start_time,
             pause_time: None,
+            pause_total_at_pause: 0.,
             speed: 1.0,
             wait: f64::NEG_INFINITY,
             force: 3e-3,
@@ -129,6 +141,7 @@ impl TimeManager {
             adjust_time,
             start_time: t,
             pause_time: None,
+            pause_total_at_pause: system_paused_secs(),
             speed,
             wait: f64::NEG_INFINITY,
             force: 3e-3,
@@ -148,6 +161,7 @@ impl TimeManager {
         self.wait = f64::NEG_INFINITY;
         // 基准同步前移：之后的 now() 只扣「reset 之后新增」的暂停
         self.sys_pause_base = system_paused_secs();
+        self.pause_total_at_pause = self.sys_pause_base;
     }
 
     pub fn wait(&mut self) {
@@ -163,9 +177,16 @@ impl TimeManager {
         /* 减去系统级暂停（切后台/锁屏）。
            这一步是「小概率直接结算」的修复核心：即使 mpsc 消息没来得及被主循环处理，
            挂起的那段时间也不会算进谱面时间。 */
+        /* 暂停期间用 pause() 时的快照，否则暂停时长会被扣两次
+           （一次由 pause_time 冻结，一次由 system_paused）。 */
+        let sys_total = if self.pause_time.is_some() {
+            self.pause_total_at_pause
+        } else {
+            system_paused_secs()
+        };
         (self.pause_time.unwrap_or_else(&self.get_time_fn)
             - self.start_time
-            - (system_paused_secs() - self.sys_pause_base))
+            - (sys_total - self.sys_pause_base))
             * self.speed
     }
 
@@ -223,6 +244,8 @@ impl TimeManager {
 
     pub fn pause(&mut self) {
         self.pause_time = Some(self.real_time());
+        // 记录此刻的系统暂停量，供 now() 在暂停期间使用（避免二次扣除）
+        self.pause_total_at_pause = system_paused_secs();
     }
 
     pub fn resume(&mut self) {
