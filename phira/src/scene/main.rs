@@ -55,10 +55,17 @@ fn position_file() -> Result<String> {
     Ok(format!("{}/mp-pos", dir::root()?))
 }
 
+/// 【话梅】主页 BGM 重载信号：设置页改了 config.home_bgm 就置 true，
+/// MainScene::update 检测到后异步重建。设置页与场景分属不同模块，
+/// 用一个原子量比引入完整事件总线轻得多。
+pub static BGM_RELOAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub struct MainScene {
     state: SharedState,
 
     bgm: Option<Music>,
+    /// 【话梅】BGM 热重载任务
+    bgm_reload_task: Option<prpr::task::Task<Option<Music>>>,
 
     background: SafeTexture,
     btn_back: RectButton,
@@ -100,6 +107,45 @@ enum ImportChart {
     Skipped(String),
 }
 
+/// 【话梅】从资源包加载主页 BGM。
+///
+/// 失败一律静默降级为 None：装扮不该让大厅起不来。
+/// 复用于冷启动与设置页切换后的热重载。
+async fn load_home_bgm() -> Option<Music> {
+    let rel = get_data().config.home_bgm.clone()?;
+    let path = format!("{}/{}", crate::dir::respacks().ok()?, rel);
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(err) => {
+            tracing::warn!("home_bgm: 读取失败（保持静音）{err}");
+            return None;
+        }
+    };
+    let clip = match AudioClip::new(bytes) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::warn!("home_bgm: 解码失败（保持静音）{err}");
+            return None;
+        }
+    };
+    match UI_AUDIO.with(|it| it.borrow_mut().create_music(
+        clip,
+        sasa::MusicParams {
+            amplifier: get_data().config.volume_bgm,
+            // loop_mix_time = 0：精确无缝循环。有缝的曲子请由资源包作者
+            // 在音频尾部做淡出，这里不擅自加 0.1s。
+            loop_mix_time: 0.,
+            ..Default::default()
+        },
+    )) {
+        Ok(m) => Some(m),
+        Err(err) => {
+            tracing::warn!("home_bgm: 创建失败（保持静音）{err}");
+            None
+        }
+    }
+}
+
 impl MainScene {
     // shall be call exactly once
     pub async fn new(fallback: FontArc) -> Result<Self> {
@@ -123,9 +169,10 @@ impl MainScene {
                                           loop_mix_time: 0., ..Default::default() }))?)
              ⚠ `loop_mix_time`：精确无缝的循环给 0；有缝的曲子给 0.05~0.2 遮一下。
                给 0 而曲子有缝 = 每次循环都咔哒一声。 */
-        let bgm = None;
+        let bgm = load_home_bgm().await;
 
         let mut sf = Self::new_inner(bgm, fallback).await?;
+        sf.bgm_reload_task = None;
         sf.pages.push(Box::new(HomePage::new(Arc::clone(&sf.icons)).await?));
         Ok(sf)
     }
@@ -161,6 +208,7 @@ impl MainScene {
             state,
 
             bgm,
+            bgm_reload_task: None,
 
             background: TEX_BACKGROUND.with(|it| it.borrow().clone().unwrap()),
             btn_back: RectButton::new(),
@@ -338,6 +386,29 @@ impl Scene for MainScene {
 
     fn update(&mut self, tm: &mut TimeManager) -> Result<()> {
         UI_AUDIO.with(|it| it.borrow_mut().recover_if_needed())?;
+
+        /* 【话梅】BGM 热重载：设置页改了 home_bgm 就置信号。
+           这里用 Task 异步加载，不阻塞渲染；加载完成前旧 BGM 继续放，
+           完成后整体替换（Music drop 会停掉旧的）。 */
+        if BGM_RELOAD.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            // 关掉旧曲子（若把 BGM 设成「无」，load 会返回 None）
+            if let Some(old) = self.bgm.take() {
+                drop(old);
+            }
+            self.bgm_reload_task = Some(prpr::task::Task::new(load_home_bgm()));
+        }
+        if let Some(task) = &mut self.bgm_reload_task {
+            if let Some(new_bgm) = task.take() {
+                self.bgm = new_bgm;
+                self.bgm_reload_task = None;
+                // 如果在主页（最上层可放 BGM）则淡入
+                if self.pages.last().is_some_and(|p| p.can_play_bgm()) {
+                    if let Some(bgm) = &mut self.bgm {
+                        let _ = bgm.fade_in(0.5);
+                    }
+                }
+            }
+        }
         if get_data().config.mp_enabled {
             MP_PANEL.with(|it| {
                 if let Some(panel) = it.borrow_mut().as_mut() {

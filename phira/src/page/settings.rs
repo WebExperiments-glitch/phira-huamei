@@ -427,8 +427,8 @@ fn render_title<'a>(ui: &mut Ui, title: impl Into<Cow<'a, str>>, subtitle: Optio
 ///
 /// 深度限制 3 层：资源包结构一般是 `manifest.json + home/xxx.png` 这种浅层，
 /// 无限递归会在玩家放了大数据集时卡住主线程。
-fn list_respack_images() -> Vec<String> {
-    fn walk(base: &std::path::Path, cur: &std::path::Path, out: &mut Vec<String>, depth: u32) {
+fn list_respack_images(include_audio: bool) -> Vec<String> {
+    fn walk(base: &std::path::Path, cur: &std::path::Path, out: &mut Vec<String>, depth: u32, include_audio: bool) {
         if depth == 0 {
             return;
         }
@@ -436,11 +436,13 @@ fn list_respack_images() -> Vec<String> {
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
-                walk(base, &p, out, depth - 1);
+                walk(base, &p, out, depth - 1, include_audio);
                 continue;
             }
             let ext = p.extension().and_then(|x| x.to_str()).unwrap_or_default().to_ascii_lowercase();
-            if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+            let is_image = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp");
+            let is_audio = include_audio && matches!(ext.as_str(), "ogg" | "mp3" | "wav" | "m4a" | "flac");
+            if is_image || is_audio {
                 if let Ok(rel) = p.strip_prefix(base) {
                     out.push(rel.to_string_lossy().replace('\\', "/"));
                 }
@@ -450,7 +452,7 @@ fn list_respack_images() -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(base) = crate::dir::respacks() {
         let base = std::path::PathBuf::from(base);
-        walk(&base, &base, &mut out, 3);
+        walk(&base, &base, &mut out, 3, include_audio);
     }
     out.sort();
     out
@@ -518,6 +520,8 @@ struct GraphicsList {
     lowq_btn: DRectButton,
     /// 【话梅】主页装扮：点一下切到下一张资源包图片
     home_bg_btn: DRectButton,
+    /// 【话梅】主页 BGM 切换（含「无」）
+    home_bgm_btn: DRectButton,
 }
 
 /// 渲染精度档位（百分比）。和绝区零的「渲染精度」同一个概念：
@@ -563,6 +567,7 @@ impl GraphicsList {
                 .with_selected(fps_index(c.fps_limit)),
             lowq_btn: DRectButton::new(),
             home_bg_btn: DRectButton::new(),
+            home_bgm_btn: DRectButton::new(),
         }
     }
 
@@ -638,6 +643,34 @@ impl GraphicsList {
             crate::apply_frame_rate(low);
             return Ok(Some(true));
         }
+
+        /* 【话梅】主页装扮：点击在「默认 → 资源包内各素材」之间循环。
+           没装资源包时列表只有「默认」，点了不变 —— 这本身就是引导信号。 */
+        if self.home_bg_btn.touch(touch, t) {
+            let mut list = list_respack_images(false);
+            list.insert(0, String::new()); // 空 = 默认
+            let cur = config.home_bg.clone().unwrap_or_default();
+            let idx = list.iter().position(|x| *x == cur).unwrap_or(0);
+            let next = list[(idx + 1) % list.len()].clone();
+            config.home_bg = if next.is_empty() { None } else { Some(next) };
+            return Ok(Some(true));
+        }
+        if self.home_bgm_btn.touch(touch, t) {
+            let mut list = list_respack_images(true);
+            // 只保留音频（背景图不混入 BGM 列表）
+            list.retain(|p| {
+                let ext = p.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+                matches!(ext.as_str(), "ogg" | "mp3" | "wav" | "m4a" | "flac")
+            });
+            list.insert(0, String::new()); // 空 = 无 BGM
+            let cur = config.home_bgm.clone().unwrap_or_default();
+            let idx = list.iter().position(|x| *x == cur).unwrap_or(0);
+            let next = list[(idx + 1) % list.len()].clone();
+            config.home_bgm = if next.is_empty() { None } else { Some(next) };
+            // 通知 MainScene 热重载（异步，不阻塞设置页）
+            crate::scene::BGM_RELOAD.store(true, std::sync::atomic::Ordering::Release);
+            return Ok(Some(true));
+        }
         Ok(None)
     }
 
@@ -666,6 +699,19 @@ impl GraphicsList {
             Some(std::borrow::Cow::Borrowed("装资源包后可换主页背景；点击切换")),
         );
         self.home_bg_btn.render_text(ui, rr, t, &bg_label, 0.42, c.home_bg.is_some());
+        ui.dy(ITEM_HEIGHT);
+
+        let bgm_label = c
+            .home_bgm
+            .as_deref()
+            .map(|p| p.rsplit('/').next().unwrap_or(p).to_owned())
+            .unwrap_or_else(|| "无".to_owned());
+        render_title(
+            ui,
+            std::borrow::Cow::Borrowed("主页音乐"),
+            Some(std::borrow::Cow::Borrowed("资源包内音频；点击切换，含「无」")),
+        );
+        self.home_bgm_btn.render_text(ui, rr, t, &bgm_label, 0.42, c.home_bgm.is_some());
         ui.dy(ITEM_HEIGHT);
 
         render_title(
