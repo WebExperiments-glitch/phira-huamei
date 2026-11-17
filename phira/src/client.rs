@@ -70,7 +70,7 @@ pub const API_URL: &str = match option_env!("HUAMEI_API_BASE") {
 /// ⚠ 服务端**不**用它做任何门控（只存不判），所以升级无兼容风险。
 ///   它长期停在 `huamei.1`，中间攒了 9 次改动都没动 —— 别学。
 /// 本次 +1：移植上游 4 个 bugfix（Bad 早晚统计 / 极短速度事件崩溃 / autoplay 特效色 / 透明插图残影）。
-pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.50";
+pub const HUAMEI_CLIENT_VER: &str = "0.8.2-huamei.51";
 
 /// 站点根 —— 取谱代理、云端鉴权、成绩上报都挂在它下面。
 ///

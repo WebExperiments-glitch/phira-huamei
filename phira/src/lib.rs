@@ -345,6 +345,8 @@ async fn the_main() -> Result<()> {
        prpr 的 Main 拿不到 phira 的 config，所以用一个原子量解耦。
        之后设置页改 TAA 也要同步更新（见 settings.rs 的 aa_btn 处理）。 */
     prpr::taa::set_global_enabled(get_data().config.taa);
+    /* 预热本地曲名字典（搜索用）。首次运行会把内置种子落盘到 data/。 */
+    crate::translate::preload();
     sync_data();
     save_data()?;
 
