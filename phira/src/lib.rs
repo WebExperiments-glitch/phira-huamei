@@ -475,6 +475,26 @@ pub extern "C" fn quad_main() {
 }
 
 fn on_pause_resume(pause: bool) {
+    /* 【话梅 2026-11-17 修「切后台小概率直接结算」】
+
+       原来这里只往 mpsc 队列塞一条消息，等主循环下一帧处理。
+       竞态就在这个「下一帧」：
+
+         锁屏/来电 → applicationWillResignActive → 发消息 → 进程被挂起
+                                                  ↑ 如果这一帧还没跑到，
+                                                    暂停就永远没生效
+
+       恢复后 `get_time_fn()` 已经前进整段挂起时长，谱面时间直接跳过整首歌，
+       音符全 Miss，玩家回来看到的是直接结算。
+
+       **所以这里必须同步冻结时间**，不能依赖主循环。
+       `system_pause/resume` 用原子量记录区间，`TimeManager::now()` 会扣掉它。 */
+    if pause {
+        prpr::time::system_pause();
+    } else {
+        prpr::time::system_resume();
+    }
+    // 消息仍然要发 —— 场景层的暂停 UI、音频暂停都靠它
     if let Some(tx) = MESSAGES_TX.lock().unwrap().as_mut() {
         let _ = tx.send(pause);
     }
