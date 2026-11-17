@@ -15,6 +15,8 @@ mod data;
 mod device;
 /// 【话梅】主页装扮素材导入（文件/相册 → 资源包）
 mod home_picker;
+/// 【话梅】搜索查询的多语言扩展（中文 → 日/英）
+mod translate;
 mod location;
 mod motion;
 pub mod deeplink;

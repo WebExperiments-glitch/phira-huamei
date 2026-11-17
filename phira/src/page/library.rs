@@ -332,27 +332,60 @@ impl LibraryPage {
         let show_unreviewed = self.tags.show_unreviewed;
         let show_stabilize = self.tags.show_stabilize;
         self.online_task = Some(Task::new(async move {
-            let mut q = Client::query::<Chart>();
-            if popular {
-                q = q.suffix("/popular");
+            /* 【话梅 2026-11-17】搜索支持多语言扩展。
+               ─────────────────────────────────────────────────────────
+               官方搜索是后端字符串匹配。实测「无呼吸义务」能命中
+               `ノンブレス・オブリージュ`（后端对热门曲有跨语言索引），
+               但覆盖不全 —— 冷门曲/新曲/翻唱版常常只能用原语言标题搜到。
+
+               所以把查询扩展成「原文 + 日文 + 英文」分别搜，再按 id 去重合并。
+               扩展失败（服务端没翻译、网络问题）时 translate::expand 会
+               只返回原文，行为与改造前完全一致 —— 不会让搜索变差。
+
+               只在**有关键词**时做，翻页不重复翻译（expand 内部有缓存）。 */
+            let queries = if !popular && !search.trim().is_empty() {
+                crate::translate::expand(&search).await
             } else {
-                q = q.search(search).order(order).tags(tags).query("rating", rating_range);
+                vec![search.clone()]
+            };
+
+            let mut merged: Vec<Chart> = Vec::new();
+            let mut seen: std::collections::HashSet<i32> = std::collections::HashSet::new();
+            let mut count: u64 = 0;
+            for (i, term) in queries.iter().enumerate() {
+                let mut q = Client::query::<Chart>();
+                if popular {
+                    q = q.suffix("/popular");
+                } else {
+                    q = q.search(term.clone()).order(order.clone()).tags(tags.clone()).query("rating", rating_range.clone());
+                }
+                if let Some(me) = by_me {
+                    q = q.query("uploader", me.to_string());
+                }
+                if show_stabilize {
+                    q = q.query("stableRequest", "true");
+                } else if show_unreviewed {
+                    q = q.query("reviewed", "false").query("stableRequest", "false");
+                }
+                let (charts, c) = q
+                    .query("type", typ.to_string())
+                    .query("division", division.clone())
+                    .page(page)
+                    .page_num(PAGE_NUM)
+                    .send()
+                    .await?;
+                // 分页总数取第一个查询的：多语言合并后的总数无法从接口得到，
+                // 用原文查询的口径最接近用户预期（也避免页码乱跳）。
+                if i == 0 {
+                    count = c;
+                }
+                for ch in charts {
+                    if seen.insert(ch.id) {
+                        merged.push(ch);
+                    }
+                }
             }
-            if let Some(me) = by_me {
-                q = q.query("uploader", me.to_string());
-            }
-            if show_stabilize {
-                q = q.query("stableRequest", "true");
-            } else if show_unreviewed {
-                q = q.query("reviewed", "false").query("stableRequest", "false");
-            }
-            let (remote_charts, count) = q
-                .query("type", typ.to_string())
-                .query("division", division)
-                .page(page)
-                .page_num(PAGE_NUM)
-                .send()
-                .await?;
+            let remote_charts = merged;
             let total_page = if count == 0 { 0 } else { (count - 1) / PAGE_NUM + 1 };
             let charts: Vec<_> = remote_charts.iter().map(ChartDisplayItem::from_remote).collect();
             Ok((charts, remote_charts, total_page))
