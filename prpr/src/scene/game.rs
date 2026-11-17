@@ -1517,6 +1517,15 @@ impl Scene for GameScene {
         Ok(())
     }
 
+    /* 【话梅 2026-11-17 诊断「退出后仍有声音」】
+       假设：sasa 的 Sfx / Music 内部都是 Arc 共享给音频线程，
+       **只有 drop AudioManager（关闭音频流）才能让所有声音立即停止**。
+       原版能停 = GameScene 的 Resource 被正常释放；
+       我们这版不停 = 某个东西还在持有 GameScene。
+
+       这条日志用来确认「退出后 GameScene 到底有没有被 drop」：
+       · 打出 → 释放正常，声音残留另有原因（长音效自然播完）
+       · 打不出 → 有引用泄漏，需要查 Task / record_data 等持有者 */
     fn next_scene(&mut self, tm: &mut TimeManager) -> NextScene {
         /* 【话梅 2026-11-17】离开对局**必须显式暂停音乐**。
            sasa 的 Music 内部是 `Arc` 共享给音频渲染线程 ——
@@ -1560,5 +1569,14 @@ impl Scene for GameScene {
         } else {
             NextScene::None
         }
+    }
+}
+
+impl Drop for GameScene {
+    fn drop(&mut self) {
+        tracing::info!(
+            "game: GameScene 已释放（music 是否已暂停={}）—— 若此后仍有声音，说明音频流未关闭",
+            self.music.paused()
+        );
     }
 }

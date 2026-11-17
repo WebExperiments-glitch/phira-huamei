@@ -270,11 +270,25 @@ impl TimeManager {
         if let Some(pause_time) = self.pause_time.take() {
             self.start_time += self.real_time() - pause_time;
         }
+        /* 【话梅 2026-11-17】关键：把这段暂停「结算」掉。
+           start_time 已经 += D 补偿了暂停时长，如果 sys_pause_base 不动，
+           now() 里的 (system_paused - sys_pause_base) 又会扣掉同一个 D
+           —— **一次暂停被扣两次**。反复切后台就累积成负时间：
+             界面卡在过渡动画里出不来（模糊、点不动、要等几秒），
+             正是用户报的「返回后画面更糊、什么也做不了」。
+           直接对齐当前值最稳，不依赖 real_time 与 system_paused 的细微误差。 */
+        self.sys_pause_base = system_paused_secs();
+        self.pause_total_at_pause = self.sys_pause_base;
         self.wait();
     }
 
     pub fn seek_to(&mut self, pos: f64) {
         self.start_time = self.pause_time.unwrap_or_else(&self.get_time_fn) - pos / self.speed;
+        /* 同 resume：把已发生的系统暂停结算掉。
+           seek_to 出现在每次场景切换（对局→大厅、展示→大厅），
+           不结算就会让 now() 随时间不断倒退 —— 过渡动画永远走不完。 */
+        self.sys_pause_base = system_paused_secs();
+        self.pause_total_at_pause = self.sys_pause_base;
         self.wait();
     }
 }
@@ -335,5 +349,60 @@ mod tests {
         system_resume();
         let after = tm.now();
         assert!((after - before).abs() < 0.05, "嵌套暂停不该叠加计费");
+    }
+
+    /// 暂停 → 恢复的净效果必须接近 0。
+    ///
+    /// 这条测试是为了锁住一个我改错过两次的地方：
+    /// resume 里 `start_time += D` 补偿了暂停时长，如果不同时把
+    /// sys_pause_base 对齐，now() 里的 (system_paused - base) 会再扣一个 D
+    /// —— 一次暂停被扣两次，反复切后台后时间变负，
+    /// 界面卡在过渡动画里出不来（模糊、点不动）。
+    #[test]
+    fn pause_resume_does_not_drift() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut tm = TimeManager::new(1., false);
+        tm.start_time -= 1.0; // 假装已经跑了 1 秒
+        let t0 = tm.now();
+
+        system_pause();
+        tm.pause();
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        system_resume();
+        tm.resume();
+
+        let t1 = tm.now();
+        assert!(
+            (t1 - t0).abs() < 0.05,
+            "暂停恢复不该让时间漂移：{t0} -> {t1}（差 {}）",
+            t1 - t0
+        );
+    }
+
+    /// seek_to 之后时间必须从目标值正常前进，不能被历史暂停拖回去。
+    ///
+    /// 场景切换（对局→大厅、展示→大厅）每次都走 seek_to。
+    #[test]
+    fn seek_to_stable_after_repeated_pauses() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut tm = TimeManager::new(1., false);
+
+        // 模拟用户反复切后台
+        for _ in 0..3 {
+            system_pause();
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            system_resume();
+        }
+
+        tm.seek_to(5.0);
+        let at = tm.now();
+        assert!((at - 5.0).abs() < 0.05, "seek_to(5.0) 后应立即等于 5.0，实际 {at}");
+
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let later = tm.now();
+        assert!(
+            later > at && later < at + 0.2,
+            "seek_to 后时间应正常前进，实际 {at} -> {later}"
+        );
     }
 }
