@@ -91,6 +91,18 @@ pub struct Config {
     pub preferred_sample_rate: Option<u32>,
     pub res_pack_path: Option<String>,
     pub sample_count: u32,
+    /* 【话梅 2026-11-17 主页装扮】
+       素材来自资源包：值是**资源包目录下的相对路径**（如 "home/bg.png"）。
+       None = 用默认外观。
+       存在 Config 而不是 Data：它和主题、字体一样属于「外观偏好」，
+       跟着设置一起导出/同步更合理。 */
+    /// 主页背景图（资源包内相对路径）
+    #[serde(default)]
+    pub home_bg: Option<String>,
+    /// 主页背景音乐（资源包内相对路径）
+    #[serde(default)]
+    pub home_bgm: Option<String>,
+
     /// 【话梅】判定范围可视化（调试用）。
     ///
     /// 对每个未判定的音符，把它在判定窗口起止时刻的位置差画成矩形：
@@ -167,6 +179,8 @@ impl Default for Config {
             taa: false,
             telemetry_enabled: true,
             show_judgement_range: false,
+            home_bg: None,
+            home_bgm: None,
             render_scale: 1.,
             fps_limit: 0,
             show_acc: false,

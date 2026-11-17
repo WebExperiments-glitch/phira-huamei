@@ -97,6 +97,12 @@ pub struct HomePage {
     char_last_user_id: Option<i32>,
     char_fetch_task: Option<Task<Result<Character>>>,
     char_illu: Option<SafeTexture>,
+
+    /// 【话梅】主页装扮：背景图（来自资源包）。
+    home_bg: Option<SafeTexture>,
+    /// 上次加载的路径。路径变了要重新加载（用户换了装扮）。
+    home_bg_last: Option<String>,
+    home_bg_task: Option<Task<Result<DynamicImage>>>,
     char_illu_task: Option<Task<Result<DynamicImage>>>,
     // progress of character screen
     char_screen_p: Anim<f32>,
@@ -221,6 +227,9 @@ impl HomePage {
             char_last_user_id: None,
             char_fetch_task: None,
             char_illu: None,
+            home_bg: None,
+            home_bg_last: None,
+            home_bg_task: None,
             char_illu_task: None,
             char_screen_p: Anim::new(0.),
             char_btn: RectButton::new(),
@@ -233,12 +242,35 @@ impl HomePage {
             beian_btn: RectButton::new(),
         };
         res.load_char_illu();
+        res.load_home_bg();
 
         Ok(res)
     }
 }
 
 impl HomePage {
+    /// 【话梅】加载主页背景。
+    ///
+    /// 路径是**资源包内的相对路径**（如 "home/bg.png"）。
+    /// 取不到就静默保持 None —— 装扮是锦上添花，不能因为它让主页起不来。
+    fn load_home_bg(&mut self) {
+        let Some(rel) = get_data().config.home_bg.clone() else {
+            return;
+        };
+        if self.home_bg_last.as_ref() == Some(&rel) {
+            return;
+        }
+        if rel.trim().is_empty() {
+            return;
+        }
+        self.home_bg_last = Some(rel.clone());
+        self.home_bg_task = Some(Task::new(async move {
+            let path = format!("{}/{}", dir::respacks()?, rel);
+            let bytes = std::fs::read(&path)?;
+            Ok(image::load_from_memory(&bytes)?)
+        }));
+    }
+
     fn load_char_illu(&mut self) {
         let key = if self.character.illust == "@" {
             format!("@{}", self.character.id)
@@ -687,6 +719,19 @@ impl Page for HomePage {
                 self.char_illu_task = None;
             }
         }
+        /* 【话梅】主页背景加载结果 */
+        if let Some(task) = &mut self.home_bg_task {
+            if let Some(res) = task.take() {
+                match res {
+                    Err(err) => warn!(?err, "home_bg: 加载失败（装扮保持默认）"),
+                    Ok(img) => {
+                        let tex: SafeTexture = img.into();
+                        self.home_bg = Some(tex.with_mipmap());
+                    }
+                }
+                self.home_bg_task = None;
+            }
+        }
         if let Some(task) = &mut self.char_fetch_task {
             if let Some(res) = task.take() {
                 match res {
@@ -718,6 +763,11 @@ impl Page for HomePage {
 
         let cp = self.char_screen_p.now(rt);
         s.render_fader(ui, |ui| {
+            /* 【话梅】主页装扮背景：铺满整屏（CropCenter 保证不变形）。
+               画在角色之前，所以角色仍然在背景之上。 */
+            if let Some(bg) = &self.home_bg {
+                ui.fill_rect(ui.screen_rect(), (**bg, ui.screen_rect(), ScaleType::CropCenter, WHITE));
+            }
             let r = Rect::new(-1. + 0.14 * cp, -ui.top + 0.12, 1., 1.7);
             if let Some(illu) = &self.char_illu {
                 let p = self.char_appear_p.now(t);
