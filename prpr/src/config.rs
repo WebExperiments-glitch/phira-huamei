@@ -103,6 +103,24 @@ pub struct Config {
     #[serde(default)]
     pub home_bgm: Option<String>,
 
+    /* 【话梅 2026-11-17】搜索翻译服务地址（可选）。
+       ─────────────────────────────────────────────────────────
+       留空 = 走我们服务端的 /api/hm/translate（如果能用）。
+       填了 = 直接请求用户自己部署的翻译服务，格式按 **LibreTranslate**：
+            POST {endpoint}/translate
+            {"q":"文本","source":"zh","target":"ja","format":"text"}
+            → {"translatedText":"..."}
+
+       为什么支持本地部署：翻译源在国内不好找（Google 直连 000），
+       而 LibreTranslate 是开源自托管、一条 docker 命令就能跑。
+       我们不需要为此维护任何 key，也不需要替用户承担翻译服务的成本。
+
+       地址示例：
+       · 电脑上跑、iOS 走局域网：http://192.168.1.10:5000
+       · 同设备：http://127.0.0.1:5000 */
+    #[serde(default)]
+    pub translate_endpoint: Option<String>,
+
     /// 【话梅】判定范围可视化（调试用）。
     ///
     /// 对每个未判定的音符，把它在判定窗口起止时刻的位置差画成矩形：
@@ -181,6 +199,7 @@ impl Default for Config {
             show_judgement_range: false,
             home_bg: None,
             home_bgm: None,
+            translate_endpoint: None,
             render_scale: 1.,
             fps_limit: 0,
             show_acc: false,
