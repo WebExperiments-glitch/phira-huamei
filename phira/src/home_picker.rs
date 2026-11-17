@@ -249,7 +249,8 @@ pub use picker_ios::pick_and_import;
 mod photo_ios {
     use super::*;
     use objc2::{define_class, rc::Retained, MainThreadMarker, MainThreadOnly};
-    use objc2_foundation::{AnyObject, NSDictionary, NSObject, NSObjectProtocol, NSURL};
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSDictionary, NSObject, NSObjectProtocol, NSURL};
     use objc2_ui_kit::{
         UIImagePickerController, UIImagePickerControllerDelegate, UIImagePickerControllerImageURL,
         UIImagePickerControllerSourceType, UINavigationControllerDelegate,
@@ -285,17 +286,26 @@ mod photo_ios {
                    用 ImageURL 而不是 OriginalImage 的原因：
                    URL 直接指向一个已落盘的临时文件，std::fs::copy 即可；
                    而 UIImage 还得 PNG/JPEG 编码一遍，多一层损耗与失败面。 */
-                let key = unsafe { UIImagePickerControllerImageURL };
-                let Some(obj) = (unsafe { info.objectForKey(key) }) else {
+                /* 显式类型注解是**必要的**，不是多余：
+                   NSDictionary::objectForKey 的返回类型是 Retained<ObjectType>，
+                   ObjectType 由字典的泛型参数决定。一旦上游 any 类型出现
+                   推断歧义（例如 AnyObject 导入写错路径），错误会连锁成
+                   三个 "type annotations needed"，行号还指向后面几行，
+                   极难定位。这里把每一步都钉死。 */
+                let key: &objc2_ui_kit::UIImagePickerControllerInfoKey =
+                    unsafe { UIImagePickerControllerImageURL };
+                let obj: Option<Retained<AnyObject>> = info.objectForKey(key);
+                let Some(obj) = obj else {
                     tracing::warn!("home_picker: 相册回调里没有 ImageURL");
                     return;
                 };
                 // Retained<T>::downcast 返回 Result<Retained<U>, Retained<T>>（消耗 self）
-                let Ok(url) = obj.downcast::<NSURL>() else {
+                let Ok(url): Result<Retained<NSURL>, _> = obj.downcast::<NSURL>() else {
                     tracing::warn!("home_picker: ImageURL 不是 NSURL");
                     return;
                 };
-                let Some(path) = url.path() else {
+                let path: Option<Retained<objc2_foundation::NSString>> = url.path();
+                let Some(path) = path else {
                     tracing::warn!("home_picker: 相册 URL 没有路径");
                     return;
                 };
@@ -329,9 +339,7 @@ mod photo_ios {
 
         let picker = UIImagePickerController::new(mtm);
         #[allow(deprecated)]
-        unsafe {
-            picker.setSourceType(UIImagePickerControllerSourceType::PhotoLibrary)
-        };
+        picker.setSourceType(UIImagePickerControllerSourceType::PhotoLibrary);
 
         let delegate = PhotoDelegate::new(mtm);
         /* `setDelegate:` 在 objc2 里的参数类型是
