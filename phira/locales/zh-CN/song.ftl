@@ -104,6 +104,7 @@ review-edit-tags = 编辑标签
 review-edit-tags-failed = 编辑标签失败
 review-edit-tags-done = 标签已更新
 
+flow-speed = 视觉流速
 mods = Mods
 mods-autoplay = 自动游玩
 mods-autoplay-sub = 启用后将无法上传成绩

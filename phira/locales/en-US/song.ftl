@@ -90,6 +90,7 @@ review-not-loaded = Info is not loaded, please wait...
 review-edit-tags = Edit Tags
 review-edit-tags-failed = Failed to edit tags.
 review-edit-tags-done = Tags updated.
+flow-speed = Flow speed
 mods = Mods
 mods-autoplay = Autoplay
 mods-autoplay-sub = Results will not be submitted when enabled.

@@ -2,6 +2,8 @@ prpr_l10n::tl_file!("song");
 
 #[cfg(feature = "video")]
 use super::UnlockScene;
+/// 【话梅 2026-11-18】Mods 面板的流速滑块（ui.rs:493 的通用控件）
+use prpr::ui::Slider;
 use super::{
     confirm_delete, confirm_dialog, fs_from_path, gen_custom_dir, import_chart_to, render_ldb, LdbDisplayItem, ProfileScene, ASSET_CHART_INFO,
 };
@@ -346,6 +348,11 @@ pub struct SongScene {
     mod_btn: RectButton,
     mod_scroll: Scroll,
     mod_btns: Vec<(DRectButton, bool)>,
+    /// 【话梅 2026-11-18】谱面 Mods 面板里的**视觉流速**滑块。
+    ///
+    /// 改的是 config.note_flow_speed（全局），不是每谱独立 ——
+    /// 与上游一致：流速是个人读谱习惯，换首歌不该重置。
+    note_flow_slider: Slider,
 
     side_content: SideContent,
     side_enter_time: f32,
@@ -526,6 +533,7 @@ impl SongScene {
             mods,
             mod_btn: RectButton::new(),
             mod_scroll: Scroll::new(),
+            note_flow_slider: Slider::new(0.1..5.0, 0.05),
             mod_btns: Vec::new(),
 
             side_content: SideContent::Edit,
@@ -1452,6 +1460,17 @@ impl SongScene {
                 }};
             }
             dy!(ui.text(tl!("mods")).size(0.9).draw_using(&BOLD_FONT).h + 0.02);
+
+            /* 【话梅 2026-11-18】视觉流速。
+               放在面板最上方是因为它最常调 —— 读谱吃力时第一反应就是拧它。
+               显示 2 位小数并与滑块的 step(0.05) 对齐，避免出现 1.7300001。 */
+            let flow_speed = get_data().config.global_note_flow_speed();
+            let rr_flow = Rect::new(width - 0.30, 0.02, 0.25, 0.09);
+            ui.text(tl!("flow-speed")).size(0.5).pos(0.03, 0.065).no_baseline().draw();
+            self.note_flow_slider
+                .render(ui, rr_flow, rt, flow_speed, format!("{flow_speed:.2}×"));
+            dy!(0.12);
+
             let rh = ITEM_HEIGHT * 3. / 5.;
             let rr = Rect::new(width - 0.24, (ITEM_HEIGHT - rh) / 2., 0.2, rh);
             let mut index = 0;
@@ -1900,6 +1919,17 @@ impl Scene for SongScene {
                             return Ok(true);
                         }
                         let rt = tm.real_time() as _;
+                        /* 滚动优先于滑块（与上游同序）：点在滚动区边缘时
+                           玩家想要的是滚动，不是把流速拧到 5 倍。 */
+                        if let Some(changed) = self
+                            .note_flow_slider
+                            .touch(touch, rt, &mut get_data_mut().config.note_flow_speed)
+                        {
+                            if changed {
+                                save_data()?;
+                            }
+                            return Ok(true);
+                        }
                         for (btn, clicked) in &mut self.mod_btns {
                             if btn.touch(touch, rt) {
                                 *clicked = true;
