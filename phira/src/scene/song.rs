@@ -353,6 +353,13 @@ pub struct SongScene {
     /// 改的是 config.note_flow_speed（全局），不是每谱独立 ——
     /// 与上游一致：流速是个人读谱习惯，换首歌不该重置。
     note_flow_slider: Slider,
+    /// 【话梅 2026-11-18】按键转换的循环切换按钮（原版 → Tap → Drag → Flick）
+    note_conv_btn: RectButton,
+    /// 本谱的玩法设置（从 info.yml 的 replica_play 读出来缓存）。
+    ///
+    /// 为什么要单独缓存：`self.info` 是 `BriefChartInfo`（列表项，只有
+    /// 名字/难度那种轻量字段），里面没有 replica_play。真值在 info.yml 里。
+    chart_play_settings: prpr::chart_play::ChartPlaySettings,
 
     side_content: SideContent,
     side_enter_time: f32,
@@ -534,6 +541,8 @@ impl SongScene {
             mod_btn: RectButton::new(),
             mod_scroll: Scroll::new(),
             note_flow_slider: Slider::new(0.1..5.0, 0.05),
+            note_conv_btn: RectButton::new(),
+            chart_play_settings: Default::default(),
             mod_btns: Vec::new(),
 
             side_content: SideContent::Edit,
@@ -1457,6 +1466,26 @@ impl SongScene {
         });
     }
 
+    /// 本谱在磁盘上的目录。与 offset 保存用同一套映射规则
+    /// （内置谱面的 `:` 前缀换成 `_`）。
+    fn replica_dir(&self) -> Result<prpr::dir::Dir> {
+        let local_path = self.local_path.as_ref().context("no local path")?;
+        let dir = format!("{}/{}", dir::charts()?, local_path.replace(':', "_"));
+        prpr::dir::Dir::new(dir)
+    }
+
+    /// 把 chart_play_settings 写回 info.yml。
+    ///
+    /// 读-改-写而不是整份覆盖：info.yml 里还有 name/difficulty/offset
+    /// 等别的字段，直接写我们这份会把它们抹掉。
+    fn save_replica_play(&mut self) -> Result<()> {
+        let mut dir = self.replica_dir()?;
+        let mut info: ChartInfo = serde_yaml::from_reader(dir.open("info.yml")?)?;
+        info.replica_play = self.chart_play_settings.clone();
+        dir.create("info.yml")?.write_all(serde_yaml::to_string(&info)?.as_bytes())?;
+        Ok(())
+    }
+
     fn side_mods(&mut self, ui: &mut Ui, rt: f32) {
         let pad = 0.03;
         ui.dx(pad);
@@ -1513,6 +1542,45 @@ impl SongScene {
             let rr_flow = Rect::new(width - 0.24, 0.10, 0.20, 0.09);
             self.note_flow_slider.render(ui, rr_flow, rt, flow_speed, String::new());
             dy!(0.22);
+
+            /* 【话梅 2026-11-18】按键转换：点击循环切换。
+               ─────────────────────────────────────────────────────────
+               不用下拉菜单是因为侧栏太窄（0.8），弹层会盖住整个面板；
+               四个状态循环点击的学习成本也不高（点两下就明白）。
+
+               ⚠ 这是**谱面级**设置（写在 info.yml 的 replica_play 里），
+                 不是全局 config —— 换一张谱就该是另一套转换。
+                 开转换期间成绩不上传，见 game.rs 的 upload_fn 构造。 */
+            {
+                use prpr::chart_play::NoteConversion;
+                let conv = self.chart_play_settings.note_conversion;
+                let (label, hint) = match conv {
+                    NoteConversion::Original => ("原版", "保持谱面原本的音符类型"),
+                    NoteConversion::Tap => ("全 Tap", "所有音符变为点击"),
+                    NoteConversion::Drag => ("全 Drag", "所有音符变为拖动"),
+                    NoteConversion::Flick => ("全 Flick", "所有音符变为滑动"),
+                };
+                let r = Rect::new(0.03, 0.0, width - 0.06, 0.13);
+                ui.fill_rect(Rect::new(r.x, r.y + 0.01, r.w, r.h), ui.background());
+                ui.text("按键转换")
+                    .size(0.55)
+                    .pos(r.x + 0.02, r.y + 0.035)
+                    .no_baseline()
+                    .draw();
+                ui.text(hint)
+                    .size(0.32)
+                    .pos(r.x + 0.02, r.y + 0.085)
+                    .no_baseline()
+                    .draw();
+                ui.text(label)
+                    .size(0.5)
+                    .pos(r.right() - 0.02, r.y + 0.06)
+                    .anchor(1., 0.5)
+                    .no_baseline()
+                    .draw();
+                self.note_conv_btn.set(ui, r);
+                dy!(0.15);
+            }
 
             let rh = ITEM_HEIGHT * 3. / 5.;
             let rr = Rect::new(width - 0.24, (ITEM_HEIGHT - rh) / 2., 0.2, rh);
@@ -1843,6 +1911,15 @@ impl Scene for SongScene {
             music.seek_to(0.)?;
             music.play()?;
         }
+        /* 读出本谱的玩法设置。读失败（内置谱面 / 文件缺失）就用默认值，
+           不报错 —— 这不该阻止玩家进谱面页。 */
+        if let Ok(mut dir) = self.replica_dir() {
+            if let Ok(f) = dir.open("info.yml") {
+                if let Ok(info) = serde_yaml::from_reader::<_, ChartInfo>(f) {
+                    self.chart_play_settings = info.replica_play;
+                }
+            }
+        }
         self.update_menu();
         Ok(())
     }
@@ -1970,6 +2047,23 @@ impl Scene for SongScene {
                         {
                             if changed {
                                 save_data()?;
+                            }
+                            return Ok(true);
+                        }
+                        /* 按键转换：点一次切下一个状态。
+                           注意 `touch` 返回的是「按下」的那一下（Started），
+                           所以这里直接切换即可，不会连点触发多次。 */
+                        if self.note_conv_btn.touch(touch) {
+                            use prpr::chart_play::NoteConversion;
+                            self.chart_play_settings.note_conversion = match self.chart_play_settings.note_conversion {
+                                NoteConversion::Original => NoteConversion::Tap,
+                                NoteConversion::Tap => NoteConversion::Drag,
+                                NoteConversion::Drag => NoteConversion::Flick,
+                                NoteConversion::Flick => NoteConversion::Original,
+                            };
+                            if let Err(err) = self.save_replica_play() {
+                                show_error(err.context("保存按键转换失败"));
+                                self.chart_play_settings.note_conversion = NoteConversion::Original;
                             }
                             return Ok(true);
                         }
