@@ -644,7 +644,19 @@ impl Main {
            为什么用全局原子开关而不是读 config：Main 属于 prpr，
            拿不到 phira 管的 config。phira 在启动与改设置时写入
            taa::set_global_enabled(config.taa)。 */
-        let dim = (screen_width() as u32, screen_height() as u32);
+        /* ⚠ 【话梅 2026-11-18】必须用**物理像素**，不能用 screen_width()。
+           ─────────────────────────────────────────────────────────
+           macroquad 的 `screen_width()` 是 `context.screen_width / dpi_scale()`
+           —— 返回的是**逻辑尺寸**。iOS 的 Retina 屏 dpi=2/3，
+           按逻辑尺寸建离屏纹理再放大到整屏，就是**低分辨率拉伸**：
+           整个 UI 发虚、文字糊成一团（用户实测截图）。
+
+           而 `quad_context.screen_size()` 明确返回 framebuffer 物理像素，
+           与最终绘制目标 1:1 —— 这才是离屏 target 该有的尺寸。
+
+           Windows（dpi=1）两者相同，所以本地测不出来，只有真机才暴露。 */
+        let (fw, fh) = unsafe { get_internal_gl() }.quad_context.screen_size();
+        let dim = (fw.max(1.) as u32, fh.max(1.) as u32);
 
         /* 【话梅 2026-11-17】静止检测：没有触摸就认为画面趋于静止。
            静止后 jitter 会在约 15 帧内线性降到 0，文字随之停止抖动并锁定清晰。
