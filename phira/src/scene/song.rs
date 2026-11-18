@@ -1464,12 +1464,41 @@ impl SongScene {
             /* 【话梅 2026-11-18】视觉流速。
                放在面板最上方是因为它最常调 —— 读谱吃力时第一反应就是拧它。
                显示 2 位小数并与滑块的 step(0.05) 对齐，避免出现 1.7300001。 */
+            /* 【话梅 2026-11-18】标签与滑块**分成两行**。
+               ─────────────────────────────────────────────────────────
+               踩过的坑：Slider::render 内部有硬编码的
+                   r.x -= 0.1;  r.x -= r.w * 0.2;
+               然后把数值文字画在 `r.x - (pad + size) * 2.` ——
+               也就是说它默认要给数值留出**滑动条左侧**一大块空间。
+               而侧栏只有 ~0.37 宽，塞不下「标签 + 数值 + 滑动条」三样，
+               数值会从左右两头挤出来撞上标签（实测截图：1.00× 与
+               speed 完全重叠）。
+
+               解法不是去改 Slider（它是全局控件，别的地方依赖这个偏移），
+               而是别让标签和滑块抢同一行 —— 标签一行，滑块一行。 */
             let flow_speed = get_data().config.global_note_flow_speed();
-            let rr_flow = Rect::new(width - 0.30, 0.02, 0.25, 0.09);
-            ui.text(tl!("flow-speed")).size(0.5).pos(0.03, 0.065).no_baseline().draw();
-            self.note_flow_slider
-                .render(ui, rr_flow, rt, flow_speed, format!("{flow_speed:.2}×"));
-            dy!(0.12);
+            ui.text(tl!("flow-speed")).size(0.45).pos(0.03, 0.025).no_baseline().draw();
+            /* 数值**自己画**，不交给 Slider。
+               ─────────────────────────────────────────────────────────
+               原因：Slider::render 把数值硬编码在滑动条**左侧**：
+                   r.x -= 0.1;  r.x -= r.w * 0.2;
+                   ui.text(text).pos(r.x - (pad + size) * 2., cy)
+               光这两次左移就有 0.144，加数值本身 0.132 —— 侧栏总宽才 ~0.37，
+               数值必然被挤到 negative 坐标，叠在左边的标签上（实测截图
+               里「1.00×」和「speed」完全重合）。
+
+               传空字符串给它，数值由下面这行画在标签右侧，两者同一 y。
+               布局变成：
+                   视觉流速  1.00×
+                     [–] [====O====] [+] */
+            /* 数值与标签**同一行**（都在 y=0.02），滑块单独一行（y≈0.10）。
+               两行的间距按实测截图反推：原来标签 0.025 / 滑块 cy 0.10，
+               只差 0.075，对 0.45 的字号来说上下沿是挨着的 ——
+               视觉上就是两行糊在一起。这里拉到 0.13 的间距。 */
+            ui.text(format!("{flow_speed:.2}×")).size(0.45).pos(0.30, 0.02).no_baseline().draw();
+            let rr_flow = Rect::new(width - 0.24, 0.10, 0.20, 0.09);
+            self.note_flow_slider.render(ui, rr_flow, rt, flow_speed, String::new());
+            dy!(0.22);
 
             let rh = ITEM_HEIGHT * 3. / 5.;
             let rr = Rect::new(width - 0.24, (ITEM_HEIGHT - rh) / 2., 0.2, rh);
