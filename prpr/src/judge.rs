@@ -520,6 +520,55 @@ impl Judge {
         }
     }
 
+    /// 【话梅 2026-11-18】从 PhiraiAd 移植：带**倒打**与**练习视野**的输入映射。
+    ///
+    /// ## 数学
+    ///
+    /// 倒打 = 画面转 180°（x、y 同时取反），不是一个轴的镜像。
+    /// 所以这里用 `rotation` 统一乘 xy，再用 `flip_x ^ flip_y` 决定是否
+    /// 再镜像回来 —— 这样四种组合（无/仅X/仅Y/XY）都能正确落到
+    /// 「旋转 180°」或「单轴镜像」上。
+    ///
+    /// ## 安全性（默认状态必须与改造前完全一致）
+    ///
+    /// `flip_y = false` 且 `view = Default` 时：
+    ///   · rotation = 1
+    ///   · chart_flip = flip_x
+    ///   · PracticeView::default() 的 screen_to_chart 是恒等
+    ///     （scale_percent=100 → scale=1，center=(0,0)）
+    /// 结果等价于原来的 `touch_transform(flip_x)` —— 有单元测试盯着。
+    /// 倒打/镜像的**纯数学**部分（不碰 GL，可单测）。
+    ///
+    /// 参数 `flip_x` 是**已经 XOR 过 auto_flip_y 的值**，见调用处注释。
+    pub(crate) fn chart_touch_math(
+        flip_x: bool,
+        flip_y: bool,
+        view: crate::practice_view::PracticeView,
+        x: f32,
+        y: f32,
+        width: f32,
+    ) -> (f32, f32) {
+        let rotation = if flip_y { -1. } else { 1. };
+        let chart_flip = if flip_x ^ flip_y { -1. } else { 1. };
+        let (cx, cy) = view.screen_to_chart(x * rotation, y * rotation, width);
+        (cx * chart_flip, cy)
+    }
+
+    fn chart_touch_transform(
+        flip_x: bool,
+        flip_y: bool,
+        view: crate::practice_view::PracticeView,
+    ) -> impl Fn(&mut Touch) {
+        let transform = Self::touch_transform(false);
+        let width = get_viewport().2 as f32;
+        move |touch| {
+            transform(touch);
+            let p = touch.position;
+            let (x, y) = Self::chart_touch_math(flip_x, flip_y, view, p.x, p.y, width);
+            touch.position = vec2(x, y);
+        }
+    }
+
     pub fn get_touches() -> Vec<Touch> {
         TOUCHES.with(|it| {
             let guard = it.borrow();
@@ -577,7 +626,20 @@ impl Judge {
                     time: f64::NEG_INFINITY,
                 });
             }
-            let tr = Self::touch_transform(res.config.flip_x());
+            /* 【话梅 2026-11-18】改用带倒打/视野的版本。
+               当前 auto_flip_y=false 且 practice_view=Default，
+               数学上与原来的 touch_transform(flip_x) 完全等价
+               （见 chart_touch_transform 的注释），所以手感应无变化。 */
+            /* ⚠ 第一个参数必须**先 XOR** auto_flip_y，这是上游的写法，
+               不是笔误。展开看就明白了：
+                 chart_flip = (config.flip_x ^ auto_flip_y) ^ auto_flip_y
+                            = config.flip_x
+               也就是说：最终的水平镜像**只由玩家设置决定**，倒打那一步
+               只负责 180° 旋转（rotation）。若直接把 config.flip_x 传进去，
+               开倒打时会多翻一次水平轴 —— 判定方向整体镜像，手指全按反。
+               （我第一版就这么写错了，靠对照上游调用才抓回来。） */
+            let flip_x = res.config.flip_x() ^ res.auto_flip_y;
+            let tr = Self::chart_touch_transform(flip_x, res.auto_flip_y, res.practice_view);
             touches
                 .into_iter()
                 .map(|mut it| {
@@ -1212,5 +1274,64 @@ pub fn icon_index(score: u32, full_combo: bool) -> usize {
         (1000000, _) => 7,
         (_, false) => 5,
         (_, true) => 6,
+    }
+}
+/// 【话梅 2026-11-18】倒打/镜像的输入映射测试。
+///
+/// 这一层是整个移植里**唯一会直接毁掉手感**的地方，所以必须用断言锁死：
+/// 写错一个轴，玩家点哪里都判不中，而且很难从现象反推原因。
+#[cfg(test)]
+mod flip_input_tests {
+    use super::Judge;
+    use crate::practice_view::PracticeView;
+
+    const W: f32 = 1080.;
+
+    fn map(flip_x: bool, flip_y: bool, x: f32, y: f32) -> (f32, f32) {
+        Judge::chart_touch_math(flip_x, flip_y, PracticeView::default(), x, y, W)
+    }
+
+    /// 默认状态（不倒打、不镜像）必须**完全恒等** —— 这是改造前后不变的保证。
+    #[test]
+    fn default_is_identity() {
+        assert_eq!(map(false, false, 0.3, -0.7), (0.3, -0.7));
+        assert_eq!(map(false, false, -0.55, 0.25), (-0.55, 0.25));
+        assert_eq!(map(false, false, 0., 0.), (0., 0.));
+    }
+
+    /// 只开水平镜像：x 取反，y 不动。
+    #[test]
+    fn flip_x_mirrors_x_only() {
+        assert_eq!(map(true, false, 0.3, -0.7), (-0.3, -0.7));
+    }
+
+    /// 只开倒打（auto_flip_y）：**180° 旋转**，xy 同时取反。
+    ///
+    /// 注意这里传的是「已 XOR 过」的第一参数（false ^ true = true），
+    /// 与调用处的写法一致。
+    #[test]
+    fn auto_flip_rotates_180() {
+        assert_eq!(map(true, true, 0.3, -0.7), (-0.3, 0.7));
+    }
+
+    /// 水平镜像 + 倒打 = 垂直镜像（x 还原，y 取反）。
+    /// 这条验证的是 `chart_flip = (u^a)^a = u` 那个化简。
+    #[test]
+    fn flip_x_plus_auto_flip_equals_flip_y() {
+        // u=true, a=true → 第一参数 = true^true = false
+        assert_eq!(map(false, true, 0.3, -0.7), (0.3, 0.7));
+    }
+
+    /// 缩放视野：scale=200% 时坐标应放大两倍。
+    #[test]
+    fn practice_view_scale_applies() {
+        let v = PracticeView {
+            scale_percent: 200.,
+            center_x: 0.,
+            center_y: 0.,
+        };
+        let (x, y) = Judge::chart_touch_math(false, false, v, 0.4, -0.2, W);
+        assert!((x - 0.2).abs() < 1e-6, "x={x}");
+        assert!((y - -0.1).abs() < 1e-6, "y={y}");
     }
 }
