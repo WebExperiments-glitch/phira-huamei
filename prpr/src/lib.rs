@@ -1,4 +1,8 @@
 pub mod bin;
+/// 【话梅 2026-11-18】从 PhiraiAd 移植：每谱的自动倒打区间 + 按键转换设置
+pub mod chart_play;
+/// 倒打播放状态机（旋转动画、区间调度）
+pub mod auto_flip;
 pub mod config;
 pub mod core;
 pub mod dir;
