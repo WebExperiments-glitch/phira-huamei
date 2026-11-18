@@ -419,6 +419,20 @@ pub struct Resource {
     last_scale: f32,
     pub note_width: f32,
 
+    /* ── 【话梅 2026-11-18】玩法自定义（从 PhiraiAd 移植）──
+       这四项都**不改变谱面时间轴与判定窗口**，只影响"看起来怎样"
+       和"输入如何映射"。收益是玩家可以视觉放慢、练局部、换键型，
+       成绩依然有效 —— 所以它们不进 Mods 的 UNRATED 判定。 */
+
+    /// 纯视觉流速倍率（1.0 = 正常）。乘在音符的屏幕位移上。
+    pub note_flow_speed: f32,
+    /// 练习模式视野：缩放/平移/旋转。`Default` = 不启用。
+    pub practice_view: crate::practice_view::PracticeView,
+    /// 倒打（判定线翻转）。影响**输入坐标映射**与最终画面旋转。
+    pub auto_flip_y: bool,
+    /// 谱面整体旋转（倒打动画期间由 AutoFlipPlayback 驱动）
+    pub rotate_chart: bool,
+
     pub time: f64,
 
     pub alpha: f32,
@@ -562,6 +576,8 @@ impl Resource {
 
         let aspect_ratio = config.aspect_ratio.unwrap_or(info.aspect_ratio);
         let note_width = config.note_scale * NOTE_WIDTH_RATIO_BASE as f32;
+        /* 必须在 config 被 move 进 Self 之前取出来 */
+        let note_flow_speed = config.global_note_flow_speed();
         let note_scale = config.note_scale;
 
         let emitter = ParticleEmitter::new(&res_pack, note_scale, res_pack.info.hide_particles)?;
@@ -583,6 +599,10 @@ impl Resource {
             last_aa: (0, false, false),
             last_scale: 1.,
             note_width,
+            note_flow_speed,
+            practice_view: Default::default(),
+            auto_flip_y: false,
+            rotate_chart: false,
 
             time: 0.,
 

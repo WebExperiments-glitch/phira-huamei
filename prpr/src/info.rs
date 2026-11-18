@@ -29,6 +29,13 @@ pub struct ChartInfo {
 
     pub chart: String,
     pub format: Option<ChartFormat>,
+
+    /// 【话梅 2026-11-18】每张谱自己的玩法设置（自动倒打区间 / 按键转换）。
+    ///
+    /// 存在 info.yml 里而不是全局 config：这是**谱面作者的意图**，
+    /// 换一张谱就该是另一套设置。缺省 = 不启用任何转换。
+    #[serde(default)]
+    pub replica_play: crate::chart_play::ChartPlaySettings,
     pub music: String,
     pub illustration: String,
     pub unlock_video: Option<String>,
@@ -70,6 +77,7 @@ impl Default for ChartInfo {
 
             chart: "chart.json".to_string(),
             format: None,
+            replica_play: Default::default(),
             music: "song.mp3".to_string(),
             illustration: "background.png".to_string(),
             unlock_video: None,

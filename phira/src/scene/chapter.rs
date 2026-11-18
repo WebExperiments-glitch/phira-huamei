@@ -225,6 +225,7 @@ impl Scene for ChapterScene {
 
                     chart: ":chart".to_owned(),
                     format: None,
+                    replica_play: Default::default(),
                     music: ":music".to_owned(),
                     illustration: ":illu".to_owned(),
                     unlock_video: None,

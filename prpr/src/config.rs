@@ -83,6 +83,15 @@ pub struct Config {
     pub low_quality: bool,
     pub mp_enabled: bool,
     pub note_scale: f32,
+    /// 【话梅 2026-11-18】全局**视觉**流速倍率（0.1~5）。
+    ///
+    /// 与 `speed` 的区别（上游注释写得很明白）：
+    ///   · `speed` 改的是谱面时间轴 —— 影响音符到达时刻与判定窗口
+    ///   · `note_flow_speed` 只改**看起来下落多快**，不碰时间、音频、判定
+    /// 所以玩家可以"视觉上放慢"来读谱，成绩仍然有效。
+    ///
+    /// 默认 1.0 = 与 speed 的表现完全一致（不引入任何变化）。
+    pub note_flow_speed: f32,
     pub offline_mode: bool,
     pub offset: f32,
     pub particle: bool,
@@ -185,6 +194,7 @@ impl Default for Config {
             low_quality: false,
             mp_enabled: false,
             note_scale: 1.0,
+            note_flow_speed: 1.0,
             offline_mode: false,
             fullscreen_mode: false,
             offset: 0.,
@@ -249,6 +259,19 @@ impl Config {
     }
 
     #[inline]
+    /// 视觉流速，做了有限性校验与范围钳制。
+    ///
+    /// 为什么要 clamp 而不是直接返回：这个值会被乘进音符的屏幕位移，
+    /// NaN/0/负数会让音符瞬移或消失。旧存档里如果存过坏值，
+    /// 这里兜住比在渲染层崩掉好。
+    pub fn global_note_flow_speed(&self) -> f32 {
+        if self.note_flow_speed.is_finite() {
+            self.note_flow_speed.clamp(0.1, 5.)
+        } else {
+            1.
+        }
+    }
+
     pub fn flip_x(&self) -> bool {
         self.has_mod(Mods::FLIP_X)
     }
