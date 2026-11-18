@@ -25,7 +25,8 @@ mod anim;
 pub use anim::{Anim, AnimFloat, AnimVector, Keyframe};
 
 mod chart;
-pub use chart::{Chart, ChartExtra, ChartSettings, HitSoundMap};
+pub use chart::{
+    NoteConversionBackup,Chart, ChartExtra, ChartSettings, HitSoundMap};
 
 mod effect;
 pub use effect::{Effect, Uniform};

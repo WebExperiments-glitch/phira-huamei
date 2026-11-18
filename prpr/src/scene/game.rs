@@ -281,6 +281,23 @@ impl GameScene {
         }
 
         let (mut chart, chart_bytes, chart_format) = Self::load_chart(fs.deref_mut(), &info).await?;
+
+        /* 【话梅 2026-11-18】按键转换：先存原始类型，再按谱面设置改写。
+           ─────────────────────────────────────────────────────────
+           顺序不能反：capture 必须在 apply **之前**，
+           否则备份下来的是已经转换过的类型，「切回原版」就还原不回去了。
+
+           为什么只在这几种模式下应用：Edit / Record 等模式下面向的是
+           「这张谱原本长什么样」，转换会污染编辑与录制数据。 */
+        let mut note_conversion_backup = crate::core::NoteConversionBackup::capture(&chart);
+        if matches!(mode, GameMode::Normal | GameMode::NoRetry | GameMode::Exercise) {
+            note_conversion_backup.apply(&mut chart, info.replica_play.note_conversion);
+        }
+        /* 备份在这里就用完了：转换结果直接改写进了 chart，
+           「切回原版」只会发生在**重新进入对局**时（重新 capture）。
+           将来若要做对局内热切换，就要把它存进 GameScene 字段。 */
+        drop(note_conversion_backup);
+
         if config.mods.contains(Mods::NO_SHADER) {
             chart.extra.effects.clear();
             chart.extra.global_effects.clear();

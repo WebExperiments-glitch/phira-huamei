@@ -1133,7 +1133,21 @@ impl SongScene {
                    关闭后连 UploadFn 都不构造 —— 结算页也就不会显示「上传中」，
                    这个「无副作用」是刻意的：让用户能看出开关真的生效了。 */
                 let telemetry_on = get_data().config.telemetry_enabled;
-                if telemetry_on { Some(Arc::new(move |data: Vec<u8>| {
+                /* 【话梅 2026-11-18】**开了按键转换或自动倒打就不上传成绩**。
+                   ─────────────────────────────────────────────────────────
+                   这不是洁癖，是必须的：把全谱改成 Tap 之后，
+                   原本需要 drag/flick 的地方全变成了一次点击 ——
+                   判定难度实质降低了，拿这种成绩去排名就是刷分。
+                   倒打同理（虽然它主要影响视觉，但也改了输入映射）。
+
+                   上游的 blocks_score_upload() 就是这个语义：
+                     auto_flip_intervals 非空 || note_conversion != Original
+                   我们在谱面级设置里沿用同一判据。 */
+                let replica_blocks = info.replica_play.blocks_score_upload();
+                if replica_blocks {
+                    tracing::info!("huamei: 谱面启用按键转换/倒打，本局不上传成绩");
+                }
+                if telemetry_on && !replica_blocks { Some(Arc::new(move |data: Vec<u8>| {
                     let digest = huamei_digest.clone();
                     Task::new(async move {
                         let resp = crate::huamei::upload_play(&data, digest).await?;
