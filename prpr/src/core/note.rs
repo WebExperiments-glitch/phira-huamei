@@ -173,6 +173,15 @@ impl Note {
     }
 
     pub fn now_transform(&self, res: &Resource, ctrl_obj: &CtrlObject, base: f32, incline_sin: f32) -> Matrix {
+        /* 【话梅 2026-11-18】视觉流速只作用在**垂直位移**上。
+           这是上游最克制的一处设计：它不改谱面时间、不改判定窗口，
+           只把「音符离判定线多远」这个屏幕量放大/缩小。
+           放在函数最前面是因为下面的 incline_val 也用 base ——
+           两者必须基于同一个值，否则音符会一边加速一边倾斜不同步。
+
+           ⚠ 不要顺手去乘 cover_base / height：
+             那些是 hold 的几何真值，乘了会和判定线对不上。 */
+        let base = base * res.note_flow_speed;
         let incline_val = 1. - incline_sin * (base * res.chart_aspect + self.object.translation.1.now()) * RPE_HEIGHT / 2. / 360.;
         let mut tr = self.object.now_translation(res);
         tr.x *= if matches!(self.kind, NoteKind::Hold { .. }) {

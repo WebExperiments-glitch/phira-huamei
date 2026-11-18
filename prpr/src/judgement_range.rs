@@ -80,9 +80,13 @@ fn point_base_at(
          · 用 `chart_aspect` 而不是 `aspect_ratio`
            （竖屏铺满不裁切时两者不等，见 Resource 里的注释）
          · yOffset **不再除以 aspect**（项目改坐标系统时一并改了）
-         · 没有 `note_flow_speed` 这个字段，流速已经揉进 spd */
+
+       关于流速：原先这里写着「没有 note_flow_speed 字段，流速已揉进 spd」——
+       **那是个错误结论**。spd 只等于 note.speed * y_ctrl，从来不含流速。
+       2026-11-18 移植了该字段之后必须在这里显式乘上，否则玩家把视觉流速
+       调大、音符画得更远，而判定范围框还留在原位 —— 框会整体错位。 */
     let _ = y_offset;
-    ((point_height - line_height) / res.chart_aspect as f64 * spd) as f32
+    ((point_height - line_height) / res.chart_aspect as f64 * spd * res.note_flow_speed as f64) as f32
 }
 
 /// 音符判定宽度的**屏幕半宽**。

@@ -91,6 +91,38 @@ pub struct JudgeLineCache {
 }
 
 impl JudgeLineCache {
+    /// 【话梅 2026-11-18】从 PhiraiAd 移植：改 kind 后重建分组，**同时保持
+    /// 原始音符数据对齐**。
+    ///
+    /// 为什么不能直接用 `new`：`new` 只对 `notes` 排序。按键转换需要一份
+    /// (kind, hitsound) 的**原始快照**，同一个排序必须同步应用到快照上 ——
+    /// 否则 notes 与 companion 错位，下一次 apply 会拿错类型，
+    /// 表现为「切换一次键型后再切回来就全乱了」。
+    pub(crate) fn with_companion<T>(notes: &mut Vec<Note>, companion: &mut Vec<T>) -> Self {
+        assert_eq!(notes.len(), companion.len());
+        let mut paired: Vec<_> = std::mem::take(notes)
+            .into_iter()
+            .zip(std::mem::take(companion))
+            .collect();
+        paired.sort_by_key(|(it, _)| {
+            (
+                it.plain(),
+                !it.above,
+                it.speed.not_nan(),
+                ((it.height + it.object.translation.1.now() as f64) * it.speed).not_nan(),
+            )
+        });
+        (*notes, *companion) = paired.into_iter().unzip();
+        let mut cache = Self {
+            update_order: Vec::new(),
+            not_plain_count: 0,
+            above_indices: Vec::new(),
+            below_indices: Vec::new(),
+        };
+        cache.reset(notes);
+        cache
+    }
+
     pub fn new(notes: &mut [Note]) -> Self {
         notes
             .sort_by_key(|it| (it.plain(), !it.above, it.speed.not_nan(), ((it.height + it.object.translation.1.now() as f64) * it.speed).not_nan()));
@@ -423,7 +455,11 @@ impl JudgeLine {
             }
             for index in &self.cache.above_indices {
                 let speed = self.notes[*index].speed;
-                let limit = height_above as f64 / speed;
+                /* 【话梅 2026-11-18】可视范围要跟着**视觉流速**一起缩放。
+                   位移被乘了 flow（note.rs 里 base * flow），这里若不同步除，
+                   flow 调大之后音符会在还没画到判定线时就被裁掉（直接消失）。
+                   反向也是：flow 调小会让远处音符白白多画几千个。 */
+                let limit = height_above as f64 / (speed * res.note_flow_speed as f64);
                 for note in self.notes[*index..].iter() {
                     if !note.above || speed != note.speed {
                         break;
@@ -440,7 +476,11 @@ impl JudgeLine {
                 }
                 for index in &self.cache.below_indices {
                     let speed = self.notes[*index].speed;
-                    let limit = height_below as f64 / speed;
+                    /* 【话梅 2026-11-18】可视范围要跟着**视觉流速**一起缩放。
+                   位移被乘了 flow（note.rs 里 base * flow），这里若不同步除，
+                   flow 调大之后音符会在还没画到判定线时就被裁掉（直接消失）。
+                   反向也是：flow 调小会让远处音符白白多画几千个。 */
+                let limit = height_below as f64 / (speed * res.note_flow_speed as f64);
                     for note in self.notes[*index..].iter() {
                         if speed != note.speed {
                             break;

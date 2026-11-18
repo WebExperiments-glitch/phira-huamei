@@ -40,6 +40,58 @@ pub struct Chart {
     pub hitsounds: HitSoundMap,
 }
 
+/// 【话梅 2026-11-18】从 PhiraiAd 移植：按键转换的**原始类型备份**。
+///
+/// 为什么需要备份：`NoteConversion` 会就地改写每个 note 的 `kind`，
+/// 而玩家可能在设置里反复切换（原版 → 全 Tap → 全 Drag → 原版）。
+/// 没有原始快照的话，切回"原版"时已经拿不回原来的类型了 ——
+/// 那就只能重新解析谱面文件（很慢，且会丢失运行时状态）。
+///
+/// 快照只存 (kind, hitsound)，按判定线分组，与 notes 一一对应 ——
+/// 所以 `JudgeLineCache::with_companion` 排序时必须**同步重排**它。
+pub struct NoteConversionBackup(Vec<Vec<(super::NoteKind, crate::judge::HitSound)>>);
+
+impl NoteConversionBackup {
+    /// 在第一次应用转换**之前**调用，把谱面原始状态存下来。
+    pub fn capture(chart: &Chart) -> Self {
+        Self(
+            chart
+                .lines
+                .iter()
+                .map(|line| {
+                    line.notes
+                        .iter()
+                        .map(|n| (n.kind.clone(), n.hitsound.clone()))
+                        .collect()
+                })
+                .collect(),
+        )
+    }
+
+    /// 按模式改写所有音符类型；`Original` 时原样还原。
+    pub fn apply(&mut self, chart: &mut Chart, mode: crate::chart_play::NoteConversion) {
+        use crate::chart_play::NoteConversion;
+        for (line, originals) in chart.lines.iter_mut().zip(&mut self.0) {
+            for (note, (kind, sound)) in line.notes.iter_mut().zip(originals.iter()) {
+                note.kind = match mode {
+                    NoteConversion::Original => kind.clone(),
+                    NoteConversion::Tap => super::NoteKind::Click,
+                    NoteConversion::Drag => super::NoteKind::Drag,
+                    NoteConversion::Flick => super::NoteKind::Flick,
+                };
+                /* 转换后原 hitsound 可能不再匹配新类型（比如 Tap 用了
+                   Flick 的音效），所以非原版统一回落到该类型的默认音效。 */
+                note.hitsound = if mode == NoteConversion::Original {
+                    sound.clone()
+                } else {
+                    crate::judge::HitSound::default_from_kind(&note.kind)
+                };
+            }
+            line.cache = super::JudgeLineCache::with_companion(&mut line.notes, originals);
+        }
+    }
+}
+
 impl Chart {
     pub fn new(offset: f32, lines: Vec<JudgeLine>, bpm_list: BpmList, settings: ChartSettings, extra: ChartExtra, hitsounds: HitSoundMap) -> Self {
         let mut attach_ui = [None; 7];
